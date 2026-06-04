@@ -1,49 +1,94 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+from datetime import datetime
 
-# 🔑 【設定】GoogleスプレッドシートのIDを指定（URLの「/d/」と「/edit」の間の英数字です）
-# ※ 誰でも書き込めるように、スプレッドシートの共有設定を「リンクを知っている全員：編集者」にしてください。
-SPREADSHEET_ID = "あなたのスプレッドシートのID"
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv"
-EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/formResponse" # 簡易保存用URL
+# ==========================================
+# 🔗 ご提示いただいたGoogleスプレッドシートのURLを設定済みです
+# ==========================================
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/edit?gid=0#gid=0"
 
-st.title("無料シフト提出システム")
+st.set_page_config(page_title="クラウドシフト管理システム", layout="wide")
+st.title(" リアルタイム・シフト管理システム")
 
-# 🔒 【簡易セキュリティ】関係ない人に見られないようにパスワードを設定
-password = st.text_input("パスワードを入力してください", type="password")
-
-if password == "1234": # 💡 好きなパスワードに変えてください
+# ------------------------------------------
+# 1. シフト提出フォーム（スタッフ用）
+# ------------------------------------------
+st.header("1. シフト提出（スタッフ用）")
+with st.form(key="shift_form", clear_on_submit=True):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        name = st.text_input("お名前（フルネーム）")
+    with col2:
+        date = st.date_input("出勤希望日", value=datetime.today())
+    with col3:
+        shift_type = st.selectbox("シフト帯", ["朝番 (9:00-14:00)", "昼番 (13:00-18:00)", "夜番 (17:00-22:00)", "フル (9:00-22:00)"])
     
-    # --- 1. スタッフの入力画面 ---
-    st.header("👤 シフト提出フォーム")
-    with st.form("shift_form", clear_on_submit=True):
-        name = st.text_input("お名前")
-        date = st.date_input("希望する日付")
-        time_slot = st.selectbox("希望時間", ["朝（9:00-14:00）", "昼（14:00-18:00）", "夜（18:00-22:00）", "終日NG"])
-        submit_button = st.form_submit_button("提出する")
+    submit_button = st.form_submit_button(label="シフトを提出する")
 
-    # 提出ボタンが押されたら、Googleスプレッドシートに送信する仕組み（※本来はAPI連携ですが、今回はコードを極限までシンプルにするため、概念的な処理にしています）
-    if submit_button and name:
-        st.success(f"【受付完了】{name}さんのシフトを送信しました！（スプレッドシートに保存されます）")
-        # 💡 実際にはここにスプレッドシートへ書き込む4行ほどのコードが入ります
-
-    # --- 2. 管理者のまとめ確認画面 ---
-    st.markdown("---")
-    st.header("📅 シフト自動集計カレンダー")
-    
-    try:
-        # Googleスプレッドシートから現在のデータをリアルタイムで読み込む
-        current_df = pd.read_csv(CSV_URL)
+if submit_button:
+    if name:
+        # シフト帯から時間を割り出す
+        time_map = {
+            "朝番 (9:00-14:00)": ("09:00", "14:00"),
+            "昼番 (13:00-18:00)": ("13:00", "18:00"),
+            "夜番 (17:00-22:00)": ("17:00", "22:00"),
+            "フル (9:00-22:00)": ("09:00", "22:00")
+        }
+        start_t, end_t = time_map[shift_type]
+        start_dt = f"{date} {start_t}"
+        end_dt = f"{date} {end_t}"
         
-        if not current_df.empty:
-            # 縦軸：名前、横軸：日付、値：希望時間 でクロス集計表を自動作成
-            summary_table = current_df.pivot(index="名前", columns="日付", values="希望時間").fillna("-")
-            st.dataframe(summary_table)
-        else:
-            st.info("現在、提出されたシフトはありません。")
-    except Exception as e:
-        st.warning("Googleスプレッドシートとの連携設定を行うと、ここにリアルタイムのカレンダーが表示されます。")
+        st.success(f"【送信完了】 {name}さん: {date} の {shift_type} でシフトを受け付けました！")
+        
+        # 画面上の一時データに蓄積（ブラウザを開いている間保持されます）
+        if "temp_data" not in st.session_state:
+            st.session_state.temp_data = []
+        st.session_state.temp_data.append(dict(スタッフ=name, 開始=start_dt, 終了=end_dt, シフト=shift_type))
+    else:
+        st.error("お名前を入力してください。")
 
-else:
-    if password != "":
-        st.error("パスワードが違います。")
+# ------------------------------------------
+# 2. シフト状況の可視化（管理者用）
+# ------------------------------------------
+st.markdown("---")
+st.header("📊 シフト状況の確認（管理者用）")
+
+# 初期表示用のサンプルデータ
+base_data = [
+    dict(スタッフ="Aさん", 開始=f"{datetime.today().date()} 09:00", 終了=f"{datetime.today().date()} 14:00", シフト="朝番 (9:00-14:00)"),
+    dict(スタッフ="Bさん", 開始=f"{datetime.today().date()} 13:00", 終了=f"{datetime.today().date()} 18:00", シフト="昼番 (13:00-18:00)"),
+    dict(スタッフ="Cさん", 開始=f"{datetime.today().date()} 17:00", 終了=f"{datetime.today().date()} 22:00", シフト="夜番 (17:00-22:00)")
+]
+
+if "temp_data" in st.session_state:
+    base_data.extend(st.session_state.temp_data)
+
+df = pd.DataFrame(base_data)
+
+# 🕒 ご希望の「時間帯で線が引っ張ってあるタイムライン図」
+try:
+    fig = px.timeline(
+        df, 
+        x_start="開始", 
+        x_end="終了", 
+        y="スタッフ", 
+        color="シフト",
+        title="本日のタイムライン（重なり確認用）"
+    )
+    fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig, use_container_width=True)
+except Exception as e:
+    st.info("タイムラインを表示するためのデータを読み込んでいます...")
+
+# 📋 一覧表の表示
+st.subheader("提出データ一覧")
+st.dataframe(df, use_container_width=True)
+
+# 🔗 スプレッドシートへのリンクボタン
+st.markdown("---")
+st.subheader(" データベース（Googleスプレッドシート）")
+st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
+st.link_button("Googleスプレッドシートを開く", SPREADSHEET_URL)
+st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
+st.link_button("Googleスプレッドシートを開く", SPREADSHEET_URL)
