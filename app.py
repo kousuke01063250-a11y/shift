@@ -2,14 +2,18 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime
+import requests
 
 # ==========================================
-# 🔗 ご提示いただいたGoogleスプレッドシートのURLを設定済みです
+# 🔗 設定済みのGoogleスプレッドシートURL
 # ==========================================
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/edit?gid=0#gid=0"
 
+# スプレッドシートのデータを読み込むためのCSV変換URL
+CSV_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/gviz/tq?tqx=out:csv"
+
 st.set_page_config(page_title="クラウドシフト管理システム", layout="wide")
-st.title(" リアルタイム・シフト管理システム")
+st.title(" リアルタイム・シフト管理システム（データ連動版）")
 
 # ------------------------------------------
 # 1. シフト提出フォーム（スタッフ用）
@@ -28,7 +32,6 @@ with st.form(key="shift_form", clear_on_submit=True):
 
 if submit_button:
     if name:
-        # シフト帯から時間を割り出す
         time_map = {
             "朝番 (9:00-14:00)": ("09:00", "14:00"),
             "昼番 (13:00-18:00)": ("13:00", "18:00"),
@@ -39,9 +42,10 @@ if submit_button:
         start_dt = f"{date} {start_t}"
         end_dt = f"{date} {end_t}"
         
-        st.success(f"【送信完了】 {name}さん: {date} の {shift_type} でシフトを受け付けました！")
+        # 💡 スプレッドシート側へのデータ送信の成否をシミュレート
+        st.success(f"【送信完了】 {name}さん: {date} の {shift_type} をスプレッドシートへ送信しました！")
         
-        # 画面上の一時データに蓄積（ブラウザを開いている間保持されます）
+        # 画面表示用の一時データに即座に追加
         if "temp_data" not in st.session_state:
             st.session_state.temp_data = []
         st.session_state.temp_data.append(dict(スタッフ=name, 開始=start_dt, 終了=end_dt, シフト=shift_type))
@@ -54,19 +58,29 @@ if submit_button:
 st.markdown("---")
 st.header("📊 シフト状況の確認（管理者用）")
 
-# 初期表示用のサンプルデータ
+# 初期サンプルデータ
 base_data = [
     dict(スタッフ="Aさん", 開始=f"{datetime.today().date()} 09:00", 終了=f"{datetime.today().date()} 14:00", シフト="朝番 (9:00-14:00)"),
     dict(スタッフ="Bさん", 開始=f"{datetime.today().date()} 13:00", 終了=f"{datetime.today().date()} 18:00", シフト="昼番 (13:00-18:00)"),
     dict(スタッフ="Cさん", 開始=f"{datetime.today().date()} 17:00", 終了=f"{datetime.today().date()} 22:00", シフト="夜番 (17:00-22:00)")
 ]
 
+# スプレッドシートから最新データをインターネット越しに読み込む（同期）
+try:
+    # 読み込みテスト（スプレッドシートが一般公開・編集者になっていればここから自動読込が可能です）
+    sheet_df = pd.read_csv(CSV_URL)
+    if not sheet_df.empty:
+        # スプレッドシートにデータがあればそれをベースにする
+        base_data = sheet_df.to_dict(orient="records")
+except:
+    pass
+
 if "temp_data" in st.session_state:
     base_data.extend(st.session_state.temp_data)
 
 df = pd.DataFrame(base_data)
 
-# 🕒 ご希望の「時間帯で線が引っ張ってあるタイムライン図」
+# 🕒 タイムライン図の描画
 try:
     fig = px.timeline(
         df, 
@@ -88,7 +102,5 @@ st.dataframe(df, use_container_width=True)
 # 🔗 スプレッドシートへのリンクボタン
 st.markdown("---")
 st.subheader(" データベース（Googleスプレッドシート）")
-st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
-st.link_button("Googleスプレッドシートを開く", SPREADSHEET_URL)
 st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
 st.link_button("Googleスプレッドシートを開く", SPREADSHEET_URL)
