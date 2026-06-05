@@ -7,7 +7,11 @@ import requests
 # ==========================================
 # 🔗 設定済みのGoogleスプレッドシートURL
 # ==========================================
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/edit?gid=0#gid=0"
+# ==========================================
+# 🔑 コピーしたNotionの情報をここに貼り付けます
+# ==========================================
+NOTION_TOKEN = "ここに ntn_... で始まるトークンを貼り付け"
+DATABASE_ID = "ここにURLから抜いた32文字のデータベースIDを貼り付け"
 
 # スプレッドシートのデータを読み込むためのCSV変換URL
 CSV_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/gviz/tq?tqx=out:csv"
