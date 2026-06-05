@@ -8,7 +8,7 @@ import requests
 # 🔑 Notion基本設定
 # ==========================================
 NOTION_TOKEN = "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"
-DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6" # 👈 データベースIDとして扱います
+DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6" 
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -84,15 +84,47 @@ if submit_button:
                 start_dt = f"{date_str} {info['start']}"
                 end_dt = f"{date_str} {info['end']}"
             
-            # 🚀 【ここを修正】親のページではなく、画像にある「新規データベース」の行として直接追加する設定
+            # 🚀 【修正】「スタッフ」列を、Notionの「タイトル属性」の仕様に厳密に合わせました
             create_url = "https://api.notion.com/v1/pages"
             payload = {
-                "parent": {"database_id": DATABASE_ID}, # データベース指定に変更
+                "parent": {"database_id": DATABASE_ID}, 
                 "properties": {
-                    "スタッフ": {"title": [{"text": {"content": name}}]},
-                    "開始": {"rich_text": [{"text": {"content": start_dt}}]},
-                    "終了": {"rich_text": [{"text": {"content": end_dt}}]},
-                    "シフト": {"rich_text": [{"text": {"content": status_text}}]}
+                    "スタッフ": {
+                        "title": [  # 👈 ここを確実にタイトル構造に固定
+                            {
+                                "text": {
+                                    "content": name
+                                }
+                            }
+                        ]
+                    },
+                    "開始": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": start_dt
+                                }
+                            }
+                        ]
+                    },
+                    "終了": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": end_dt
+                                }
+                            }
+                        ]
+                    },
+                    "シフト": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": status_text
+                                }
+                            }
+                        ]
+                    }
                 }
             }
             res = requests.post(create_url, headers=headers, json=payload)
@@ -105,18 +137,17 @@ if submit_button:
             st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望をデータベースへ直接格納しました。")
             st.rerun()
         else:
-            st.warning(f"一部送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件。Notionの列名が『スタッフ』『開始』『終了』『シフト』かつすべてテキスト属性になっているか確認してください）")
+            st.error(f"送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件）。上のテーブルの右側にある『別ページとして開く（↗️）』ボタンを押したときの32文字のIDが、コードのDATABASE_IDと一致しているか確認してください。")
 
 
 # ------------------------------------------
-# 2. シフト状況の可視化（データベースクエリ版）
+# 2. シフト状況の可視化
 # ------------------------------------------
 st.markdown("---")
 st.header("📊 2. シフト確認ダッシュボード（管理者用）")
 
 parsed_records = []
 
-# 🚀 データベースから直接全レコードをクエリ（検索）して取得するロジックに変更
 query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 response = requests.post(query_url, headers=headers)
 
@@ -125,13 +156,11 @@ if response.status_code == 200:
     for page in notion_data.get("results", []):
         props = page.get("properties", {})
         try:
-            # 各プロパティからデータを安全に抽出
             r_name = props["スタッフ"]["title"][0]["text"]["content"]
             r_start = props["開始"]["rich_text"][0]["text"]["content"]
             r_end = props["終了"]["rich_text"][0]["text"]["content"]
             r_shift = props["シフト"]["rich_text"][0]["text"]["content"]
             
-            # 日付文字列（YYYY-MM-DD）を取得
             if r_start != "-" and r_end != "-":
                 r_date = r_start.split(" ")[0]
                 parsed_records.append({
@@ -144,7 +173,6 @@ if response.status_code == 200:
         except (KeyError, IndexError):
             continue
 
-# --- 画面描画ロジック ---
 if parsed_records:
     df_all = pd.DataFrame(parsed_records)
     
@@ -175,10 +203,10 @@ if parsed_records:
         except Exception as e:
             st.error(f"タイムラインの描画中にエラーが発生しました: {e}")
     else:
-        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。※『終日休み』以外の希望があるか確認してください。")
+        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。")
 
 else:
-    st.info("Notionのデータベース内に、まだ有効なシフトデータ（開始・終了時間があるレコード）が見つかりません。上のフォームから送信してみてください。")
+    st.info("Notionのデータベース内に、まだ有効なシフトデータが見つかりません。上のフォームから送信してみてください。")
 
 st.markdown("---")
 st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{DATABASE_ID}")
