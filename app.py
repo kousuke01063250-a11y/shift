@@ -4,16 +4,21 @@ import plotly.express as px
 from datetime import datetime
 import requests
 
-
+# ==========================================
+# 🔑 Notion基本設定（高部さんの情報に固定）
+# ==========================================
 NOTION_TOKEN = "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"
 DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6"
 
-
-# スプレッドシートのデータを読み込むためのCSV変換URL
-CSV_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/gviz/tq?tqx=out:csv"
+# API通信用の共通ヘッダー
+headers = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28"
+}
 
 st.set_page_config(page_title="クラウドシフト管理システム", layout="wide")
-st.title(" リアルタイム・シフト管理システム（データ連動版）")
+st.title(" リアルタイム・シフト管理システム（Notion完全連動版）")
 
 # ------------------------------------------
 # 1. シフト提出フォーム（スタッフ用）
@@ -42,41 +47,56 @@ if submit_button:
         start_dt = f"{date} {start_t}"
         end_dt = f"{date} {end_t}"
         
-        # 💡 スプレッドシート側へのデータ送信の成否をシミュレート
-        st.success(f"【送信完了】 {name}さん: {date} の {shift_type} をスプレッドシートへ送信しました！")
+        # 🚀 【修正】実際にNotion APIへシフトデータを送信して保存するロジック
+        create_url = "https://api.notion.com/v1/pages"
+        payload = {
+            "parent": {"database_id": DATABASE_ID},
+            "properties": {
+                "スタッフ": {"title": [{"text": {"content": name}}]},
+                "開始": {"rich_text": [{"text": {"content": start_dt}}]},
+                "終了": {"rich_text": [{"text": {"content": end_dt}}]},
+                "シフト": {"rich_text": [{"text": {"content": shift_type}}]}
+            }
+        }
+        res = requests.post(create_url, headers=headers, json=payload)
         
-        # 画面表示用の一時データに即座に追加
-        if "temp_data" not in st.session_state:
-            st.session_state.temp_data = []
-        st.session_state.temp_data.append(dict(スタッフ=name, 開始=start_dt, 終了=end_dt, シフト=shift_type))
+        if res.status_code == 200:
+            st.success(f"【送信完了】 {name}さん: Notionのデータベースへダイレクトに反映されました！")
+        else:
+            st.error(f"Notionへの送信に失敗しました。ステータスコード: {res.status_code}")
     else:
         st.error("お名前を入力してください。")
 
 # ------------------------------------------
-# 2. シフト状況の可視化（管理者用）
+# 2. シフト状況の確認と可視化（管理者用）
 # ------------------------------------------
 st.markdown("---")
 st.header("📊 シフト状況の確認（管理者用）")
 
-# 初期サンプルデータ
-base_data = [
-    dict(スタッフ="Aさん", 開始=f"{datetime.today().date()} 09:00", 終了=f"{datetime.today().date()} 14:00", シフト="朝番 (9:00-14:00)"),
-    dict(スタッフ="Bさん", 開始=f"{datetime.today().date()} 13:00", 終了=f"{datetime.today().date()} 18:00", シフト="昼番 (13:00-18:00)"),
-    dict(スタッフ="Cさん", 開始=f"{datetime.today().date()} 17:00", 終了=f"{datetime.today().date()} 22:00", シフト="夜番 (17:00-22:00)")
-]
+# 🚀 【修正】古いスプレッドシートからの読み込みを廃止し、Notionからリアルタイム同期
+base_data = []
+query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+response = requests.post(query_url, headers=headers)
 
-# スプレッドシートから最新データをインターネット越しに読み込む（同期）
-try:
-    # 読み込みテスト（スプレッドシートが一般公開・編集者になっていればここから自動読込が可能です）
-    sheet_df = pd.read_csv(CSV_URL)
-    if not sheet_df.empty:
-        # スプレッドシートにデータがあればそれをベースにする
-        base_data = sheet_df.to_dict(orient="records")
-except:
-    pass
+if response.status_code == 200:
+    notion_data = response.json()
+    for page in notion_data.get("results", []):
+        props = page.get("properties", {})
+        try:
+            p_name = props["スタッフ"]["title"][0]["text"]["content"]
+            p_start = props["開始"]["rich_text"][0]["text"]["content"]
+            p_end = props["終了"]["rich_text"][0]["text"]["content"]
+            p_shift = props["シフト"]["rich_text"][0]["text"]["content"]
+            base_data.append(dict(スタッフ=p_name, 開始=p_start, 終了=p_end, シフト=p_shift))
+        except KeyError:
+            # プロパティ名が一致しない、または空の列がある場合はスキップ
+            continue
 
-if "temp_data" in st.session_state:
-    base_data.extend(st.session_state.temp_data)
+# 万が一Notionが空だった場合のサンプル
+if not base_data:
+    base_data = [
+        dict(スタッフ="初期サンプル", 開始=f"{datetime.today().date()} 09:00", 終了=f"{datetime.today().date()} 14:00", シフト="朝番 (9:00-14:00)")
+    ]
 
 df = pd.DataFrame(base_data)
 
@@ -88,7 +108,7 @@ try:
         x_end="終了", 
         y="スタッフ", 
         color="シフト",
-        title="本日のタイムライン（重なり確認用）"
+        title="本日のタイムライン（Notion同期データ）"
     )
     fig.update_yaxes(autorange="reversed")
     st.plotly_chart(fig, use_container_width=True)
@@ -99,14 +119,17 @@ except Exception as e:
 st.subheader("提出データ一覧")
 st.dataframe(df, use_container_width=True)
 
-# 🔗 スプレッドシートへのリンクボタン
+# 🔗 Notionへの直接リンク
 st.markdown("---")
-st.subheader(" データベースnotion")
-st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
+st.subheader(" 📂 データベースNotion")
+st.markdown("すべてのデータは、以下の安全なクラウド上のNotionデータベースに蓄積されています。")
 st.link_button("Notionのシフト表を開く", "https://app.notion.com/p/376f6a7e7de880a98d1fd3e6431a03b6")
 
 
-# 管理者用ページ、またはタブの切り替え内
+# ------------------------------------------
+# 3. 新規スタッフ登録（管理者用）
+# ------------------------------------------
+st.markdown("---")
 st.header("👥 管理者用：新規スタッフ登録")
 
 with st.form(key="admin_staff_form", clear_on_submit=True):
@@ -117,14 +140,20 @@ with st.form(key="admin_staff_form", clear_on_submit=True):
 
 if admin_submit:
     if new_staff_name:
-        # スタッフ名用データベース（別のDATABASE_ID）にAPIで送信
+        # 🚀 【修正】スタッフ情報も独立させず、現段階では同じNotionデータベースへ
+        # 「スタッフ登録フラグ」のような形で蓄積するか、同じテーブルの別形式として安全に送信します
         staff_payload = {
-            "parent": {"database_id": STAFF_DATABASE_ID},
+            "parent": {"database_id": DATABASE_ID},
             "properties": {
-                "スタッフ名": {"title": [{"text": {"content": new_staff_name}}]},
-                "上限日数": {"number": max_days_per_week}
+                "スタッフ": {"title": [{"text": {"content": f"【マスター】{new_staff_name}"}}]},
+                "開始": {"rich_text": [{"text": {"content": f"週上限: {max_days_per_week}日"}}]},
+                "終了": {"rich_text": [{"text": {"content": "-"}}]},
+                "シフト": {"rich_text": [{"text": {"content": "マスター登録"}}]}
             }
         }
         res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=staff_payload)
         if res.status_code == 200:
-            st.success(f"【登録完了】{new_staff_name}さんを最適化の対象スタッフとして登録しました！")
+            st.success(f"【登録完了】{new_staff_name}さん（週上限 {max_days_per_week}日）をNotionへ登録しました！")
+            st.rerun() # 画面を更新して即座に下の表に反映
+        else:
+            st.error(f"スタッフ登録に失敗しました。ステータスコード: {res.status_code}")
