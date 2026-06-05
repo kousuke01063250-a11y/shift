@@ -5,10 +5,10 @@ from datetime import datetime, timedelta
 import requests
 
 # ==========================================
-# 🔑 Notion基本設定
+# 🔑 Notion基本設定（最新の正確なIDに修正）
 # ==========================================
 NOTION_TOKEN = "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"
-DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6" 
+DATABASE_ID = "376f6a7e7de8805b850c000ccfc4e205"  # 👈 コピーしていただいた本物のDB ID
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -84,45 +84,29 @@ if submit_button:
                 start_dt = f"{date_str} {info['start']}"
                 end_dt = f"{date_str} {info['end']}"
             
-            # 🚀 【修正】「スタッフ」列を、Notionの「タイトル属性」の仕様に厳密に合わせました
+            # 正確な宛先に対して、Notionが求める正確なJSONデータ形式で送信
             create_url = "https://api.notion.com/v1/pages"
             payload = {
                 "parent": {"database_id": DATABASE_ID}, 
                 "properties": {
                     "スタッフ": {
-                        "title": [  # 👈 ここを確実にタイトル構造に固定
-                            {
-                                "text": {
-                                    "content": name
-                                }
-                            }
+                        "title": [
+                            {"text": {"content": name}}
                         ]
                     },
                     "開始": {
                         "rich_text": [
-                            {
-                                "text": {
-                                    "content": start_dt
-                                }
-                            }
+                            {"text": {"content": start_dt}}
                         ]
                     },
                     "終了": {
                         "rich_text": [
-                            {
-                                "text": {
-                                    "content": end_dt
-                                }
-                            }
+                            {"text": {"content": end_dt}}
                         ]
                     },
                     "シフト": {
                         "rich_text": [
-                            {
-                                "text": {
-                                    "content": status_text
-                                }
-                            }
+                            {"text": {"content": status_text}}
                         ]
                     }
                 }
@@ -137,7 +121,7 @@ if submit_button:
             st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望をデータベースへ直接格納しました。")
             st.rerun()
         else:
-            st.error(f"送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件）。上のテーブルの右側にある『別ページとして開く（↗️）』ボタンを押したときの32文字のIDが、コードのDATABASE_IDと一致しているか確認してください。")
+            st.error(f"送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件）。Notion側の列の名前（スタッフ、開始、終了、シフト）をもう一度ご確認ください。")
 
 
 # ------------------------------------------
