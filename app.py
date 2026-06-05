@@ -104,3 +104,27 @@ st.markdown("---")
 st.subheader(" データベース（Googleスプレッドシート）")
 st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
 st.link_button("Googleスプレッドシートを開く", SPREADSHEET_URL)
+
+
+# 管理者用ページ、またはタブの切り替え内
+st.header("👥 管理者用：新規スタッフ登録")
+
+with st.form(key="admin_staff_form", clear_on_submit=True):
+    new_staff_name = st.text_input("登録するスタッフの氏名")
+    max_days_per_week = st.number_input("週の最大出勤可能日数（制約条件）", min_value=1, max_value=7, value=3)
+    
+    admin_submit = st.form_submit_button(label="スタッフをマスターに登録")
+
+if admin_submit:
+    if new_staff_name:
+        # スタッフ名用データベース（別のDATABASE_ID）にAPIで送信
+        staff_payload = {
+            "parent": {"database_id": STAFF_DATABASE_ID},
+            "properties": {
+                "スタッフ名": {"title": [{"text": {"content": new_staff_name}}]},
+                "上限日数": {"number": max_days_per_week}
+            }
+        }
+        res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=staff_payload)
+        if res.status_code == 200:
+            st.success(f"【登録完了】{new_staff_name}さんを最適化の対象スタッフとして登録しました！")
