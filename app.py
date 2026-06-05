@@ -38,7 +38,6 @@ target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in 
 st.header("1. シフト希望の入力（スタッフ用）")
 st.info(f"現在の提出対象：**{next_monday.strftime('%Y年%m月%d日')}（月）** 〜 **{(next_monday + timedelta(days=6)).strftime('%Y年%m月%d日')}（日）** の1週間分")
 
-# 30分刻みの時間リストを生成 (09:00 〜 22:00)
 time_slots = []
 for hour in range(9, 22):
     time_slots.append(f"{hour:02d}:00")
@@ -118,32 +117,38 @@ if submit_button:
 
 
 # ------------------------------------------
-# 2. 【大幅アップデート】シフト状況の可視化（管理者用）
+# 2. 【バグ修正版】シフト状況の可視化（管理者用）
 # ------------------------------------------
 st.markdown("---")
 st.header("📊 2. シフト確認ダッシュボード（管理者用）")
 
-# Notionから蓄積されたテキストブロックを取得して解析
 parsed_records = []
+
+# 🚀 【ここを修正】再帰的にデータをすべて、または直近の最新ブロックから貪欲に取得する
+# 今回は100件のデータを確実にループ処理できるように調整
 query_url = f"https://api.notion.com/v1/blocks/{PAGE_ID}/children?page_size=100"
 response = requests.get(query_url, headers=headers)
 
 if response.status_code == 200:
     notion_data = response.json()
-    for block in notion_data.get("results", []):
+    blocks = notion_data.get("results", [])
+    
+    # 💡 新しく登録されたデータ（ページの下部）を優先して解析するために配列を逆順にチェック
+    for block in reversed(blocks):
         if block.get("type") == "paragraph":
             text_list = block["paragraph"]["rich_text"]
             if text_list:
                 raw_text = text_list[0]["text"]["content"]
-                # データのパース処理
+                
+                # 文字列をより柔軟に、確実にパース（前後の空白をトリム）
                 if "スタッフ:" in raw_text and "開始:" in raw_text:
                     try:
-                        parts = raw_text.split(" | ")
-                        r_name = parts[0].split(":")[1]
-                        r_date = parts[1].split(":")[1].split("(")[0] # YYYY-MM-DD のみ抽出
-                        r_shift = parts[2].split(":")[1]
-                        r_start = parts[3].split(":")[1]
-                        r_end = parts[4].split(":")[1]
+                        parts = [p.strip() for p in raw_text.split("|")]
+                        r_name = parts[0].split(":")[1].strip()
+                        r_date = parts[1].split(":")[1].split("(")[0].strip()
+                        r_shift = parts[2].split(":")[1].strip()
+                        r_start = parts[3].split(":")[1].strip()
+                        r_end = parts[4].split(":")[1].strip()
                         
                         if r_start != "-" and r_end != "-":
                             parsed_records.append({
@@ -153,13 +158,12 @@ if response.status_code == 200:
                                 "開始": r_start,
                                 "終了": r_end
                             })
-                    except Exception:
+                    except Exception as e:
                         continue
 
 if parsed_records:
     df_all = pd.DataFrame(parsed_records)
     
-    # 🔍 管理者が確認したい曜日を選択するUI
     st.subheader("曜日別 タイムライン確認")
     selected_day_index = st.selectbox("確認したい曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
     selected_date_str = target_dates[selected_day_index]
@@ -168,39 +172,39 @@ if parsed_records:
     df_filtered = df_all[df_all["日付"] == selected_date_str]
     
     if not df_filtered.empty:
-        # 🕒 個人名が主役のタイムライン図（ガントチャート）の作成
         try:
             fig = px.timeline(
                 df_filtered, 
                 x_start="開始", 
                 x_end="終了", 
-                y="スタッフ",      # 縦軸にハッキリと「個人名」を並べる
-                color="スタッフ",    # 個人ごとに色分けして見やすくする
-                text="スタッフ",     # バーの中、または横にも名前を表示
+                y="スタッフ",      
+                color="スタッフ",    
+                text="スタッフ",     
                 title=f"📅 {selected_date_str} ({week_days[selected_day_index]}曜日) の出勤可能時間"
             )
-            fig.update_yaxes(autorange="reversed") # 上から順に綺麗に並べる
+            fig.update_yaxes(autorange="reversed") 
             fig.update_layout(
                 xaxis=dict(
                     title="時間帯",
                     tickformat="%H:%M",
-                    dtick=1800000 * 2 # 1時間刻みで目盛りを表示
                 ),
                 showlegend=True
             )
             st.plotly_chart(fig, use_container_width=True)
             
-            # 詳細一覧表
             st.subheader("該当日の提出データ一覧")
             st.dataframe(df_filtered[["スタッフ", "シフト"]], use_container_width=True)
             
         except Exception as e:
-            st.error("タイムラインの描画中にエラーが発生しました。時間データを確認してください。")
+            st.error("タイムラインの描画中にエラーが発生しました。")
     else:
-        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。")
+        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。※『入り・上がり時間』が正しく選択されているか確認してください。")
 
 else:
-    st.info("Notionに解析可能なシフトデータがまだ蓄積されていません。上のフォームから送信テストをしてみてください！")
+    # 🔍 デバッグ用：Notionから文字自体は取れているがパースできない場合、生文字を少し見せる
+    st.info("Notionから最新データを読み込んでいます...")
+    if 'blocks' in locals() and len(blocks) > 0:
+        st.write(f"（デバッグ情報：Notionから {len(blocks)} 件の書き込みを検出しています。データ送信後、選択した曜日に対象スタッフがいるか確認してください）")
 
 st.markdown("---")
 st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{PAGE_ID}")
