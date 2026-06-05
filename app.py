@@ -28,7 +28,6 @@ if days_until_next_monday == 0:
     days_until_next_monday = 7
 next_monday = today + timedelta(days=days_until_next_monday)
 
-# 曜日リストの定義
 week_days = ["月", "火", "水", "木", "金", "土", "日"]
 target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
@@ -117,15 +116,14 @@ if submit_button:
 
 
 # ------------------------------------------
-# 2. 【バグ修正版】シフト状況の可視化（管理者用）
+# 2. シフト状況の可視化（管理者用デバッグ強化版）
 # ------------------------------------------
 st.markdown("---")
 st.header("📊 2. シフト確認ダッシュボード（管理者用）")
 
 parsed_records = []
+debug_raw_texts = [] # パースに失敗した生の文字を突っ込む箱
 
-# 🚀 【ここを修正】再帰的にデータをすべて、または直近の最新ブロックから貪欲に取得する
-# 今回は100件のデータを確実にループ処理できるように調整
 query_url = f"https://api.notion.com/v1/blocks/{PAGE_ID}/children?page_size=100"
 response = requests.get(query_url, headers=headers)
 
@@ -133,22 +131,25 @@ if response.status_code == 200:
     notion_data = response.json()
     blocks = notion_data.get("results", [])
     
-    # 💡 新しく登録されたデータ（ページの下部）を優先して解析するために配列を逆順にチェック
     for block in reversed(blocks):
         if block.get("type") == "paragraph":
             text_list = block["paragraph"]["rich_text"]
             if text_list:
                 raw_text = text_list[0]["text"]["content"]
+                debug_raw_texts.append(raw_text) # デバッグ用に全テキストを記録
                 
-                # 文字列をより柔軟に、確実にパース（前後の空白をトリム）
+                # 🚀 【パース強化】より安全に、かつ柔軟に文字列を抽出
                 if "スタッフ:" in raw_text and "開始:" in raw_text:
                     try:
+                        # 区切り文字 `|` で分解
                         parts = [p.strip() for p in raw_text.split("|")]
-                        r_name = parts[0].split(":")[1].strip()
-                        r_date = parts[1].split(":")[1].split("(")[0].strip()
-                        r_shift = parts[2].split(":")[1].strip()
-                        r_start = parts[3].split(":")[1].strip()
-                        r_end = parts[4].split(":")[1].strip()
+                        
+                        # それぞれの要素から値を取り出す
+                        r_name = [p for p in parts if "スタッフ:" in p][0].split(":")[1].strip()
+                        r_date = [p for p in parts if "日付:" in p][0].split(":")[1].split("(")[0].strip()
+                        r_shift = [p for p in parts if "シフト:" in p][0].split(":")[1].strip()
+                        r_start = [p for p in parts if "開始:" in p][0].split(":")[1].strip()
+                        r_end = [p for p in parts if "終了:" in p][0].split(":")[1].strip()
                         
                         if r_start != "-" and r_end != "-":
                             parsed_records.append({
@@ -161,6 +162,7 @@ if response.status_code == 200:
                     except Exception as e:
                         continue
 
+# --- 画面描画ロジック ---
 if parsed_records:
     df_all = pd.DataFrame(parsed_records)
     
@@ -168,7 +170,6 @@ if parsed_records:
     selected_day_index = st.selectbox("確認したい曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
     selected_date_str = target_dates[selected_day_index]
     
-    # 選択された日付のデータのみにフィルタリング
     df_filtered = df_all[df_all["日付"] == selected_date_str]
     
     if not df_filtered.empty:
@@ -183,28 +184,27 @@ if parsed_records:
                 title=f"📅 {selected_date_str} ({week_days[selected_day_index]}曜日) の出勤可能時間"
             )
             fig.update_yaxes(autorange="reversed") 
-            fig.update_layout(
-                xaxis=dict(
-                    title="時間帯",
-                    tickformat="%H:%M",
-                ),
-                showlegend=True
-            )
+            fig.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"), showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
             
             st.subheader("該当日の提出データ一覧")
             st.dataframe(df_filtered[["スタッフ", "シフト"]], use_container_width=True)
             
         except Exception as e:
-            st.error("タイムラインの描画中にエラーが発生しました。")
+            st.error(f"タイムラインの描画中にエラーが発生しました: {e}")
     else:
-        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。※『入り・上がり時間』が正しく選択されているか確認してください。")
+        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。※『終日休み』以外の希望があるか確認してください。")
 
 else:
-    # 🔍 デバッグ用：Notionから文字自体は取れているがパースできない場合、生文字を少し見せる
-    st.info("Notionから最新データを読み込んでいます...")
-    if 'blocks' in locals() and len(blocks) > 0:
-        st.write(f"（デバッグ情報：Notionから {len(blocks)} 件の書き込みを検出しています。データ送信後、選択した曜日に対象スタッフがいるか確認してください）")
+    # 🔍 【超重要】パースに失敗している場合、Notionから何が取れているかを画面に出す
+    st.warning("⚠️ Notionからデータは取得できましたが、解析（パース）に失敗しているか、データ形式が一致しません。")
+    if debug_raw_texts:
+        st.subheader("🛠️ デバッグ情報：Notionから取得した生のテキストデータ")
+        st.write("Pythonが読み込んでいる実際の文字は以下です。これらを解析できるようにプログラムを即座にチューニングします：")
+        for txt in debug_raw_texts[:5]: # 直近5件を表示
+            st.code(txt)
+    else:
+        st.info("Notionのページ内に、まだテキストブロック（シフトデータ）が見つかりません。")
 
 st.markdown("---")
 st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{PAGE_ID}")
