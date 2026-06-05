@@ -17,20 +17,23 @@ headers = {
 }
 
 st.set_page_config(page_title="1週間シフト管理システム", layout="wide")
-st.title("📅 1週間一括・30分単位 シフト提出システム")
+st.title("📅 1週間一括・30分単位 シフト管理システム")
 
 # ------------------------------------------
 # 💡 自動で「来週の月曜日」の日付を計算するロジック
 # ------------------------------------------
 today = datetime.today()
-# 次の月曜日までの日数を計算（今日が月曜なら7日後、火曜なら6日後...）
 days_until_next_monday = (0 - today.weekday()) % 7
 if days_until_next_monday == 0:
     days_until_next_monday = 7
 next_monday = today + timedelta(days=days_until_next_monday)
 
+# 曜日リストの定義
+week_days = ["月", "火", "水", "木", "金", "土", "日"]
+target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+
 # ------------------------------------------
-# 1. シフト提出フォーム（1週間分一括）
+# 1. シフト提出フォーム（スタッフ用）
 # ------------------------------------------
 st.header("1. シフト希望の入力（スタッフ用）")
 st.info(f"現在の提出対象：**{next_monday.strftime('%Y年%m月%d日')}（月）** 〜 **{(next_monday + timedelta(days=6)).strftime('%Y年%m月%d日')}（日）** の1週間分")
@@ -43,46 +46,29 @@ for hour in range(9, 22):
 time_slots.append("22:00")
 
 with st.form(key="weekly_shift_form", clear_on_submit=False):
-    # お名前入力
     name = st.text_input("お名前（フルネーム）", placeholder="例：高部 光佑")
     st.markdown("---")
     
-    # 曜日ごとの入力スペースを横並び（タブ）で綺麗に配置
-    week_days = ["月", "火", "水", "木", "金", "土", "日"]
     tabs = st.tabs([f"{d}曜日" for d in week_days])
-    
-    # 曜日ごとの入力データを保持する辞書
     weekly_data = {}
     
     for i, day_name in enumerate(week_days):
-        target_date = next_monday + timedelta(days=i)
-        date_str = target_date.strftime("%Y-%m-%d")
-        
+        date_str = target_dates[i]
         with tabs[i]:
             st.subheader(f"📅 {date_str} ({day_name}) の希望")
-            
-            # 「この日は入れない（休み）」のチェックボックス
             is_off = st.checkbox("この日は出勤できない（終日休み）", key=f"off_{date_str}")
             
             col1, col2 = st.columns(2)
             with col1:
                 start_time = st.selectbox("入り時間（開始）", time_slots, index=0, key=f"start_{date_str}", disabled=is_off)
             with col2:
-                # 終了時間はデフォルトで一コマ後ろ（09:30）にしておく
                 end_time = st.selectbox("上がり時間（終了）", time_slots, index=1, key=f"end_{date_str}", disabled=is_off)
             
-            # データを記憶
-            weekly_data[date_str] = {
-                "day_name": day_name,
-                "is_off": is_off,
-                "start": start_time,
-                "end": end_time
-            }
+            weekly_data[date_str] = {"day_name": day_name, "is_off": is_off, "start": start_time, "end": end_time}
             
     st.markdown("---")
     submit_button = st.form_submit_button(label="🚀 1週間分のシフトをまとめて提出する")
 
-# 送信ボタンが押された時の処理
 if submit_button:
     if not name:
         st.error("お名前を入力してください。")
@@ -90,9 +76,7 @@ if submit_button:
         success_count = 0
         error_count = 0
         
-        # 7日分のデータをループしてNotionに1つずつ送信
         for date_str, info in weekly_data.items():
-            # 休みの日も「休み」というレコードとしてNotionに送る（最適化で計算しやすくするため）
             if info["is_off"]:
                 status_text = "終日休み"
                 start_dt = "-"
@@ -102,7 +86,6 @@ if submit_button:
                 start_dt = f"{date_str} {info['start']}"
                 end_dt = f"{date_str} {info['end']}"
             
-            # Notionへの送信ペイロード
             create_url = "https://api.notion.com/v1/pages"
             payload = {
                 "parent": {"page_id": PAGE_ID},
@@ -121,7 +104,6 @@ if submit_button:
                     }
                 ]
             }
-            
             res = requests.post(create_url, headers=headers, json=payload)
             if res.status_code == 200:
                 success_count += 1
@@ -129,33 +111,96 @@ if submit_button:
                 error_count += 1
         
         if error_count == 0:
-            st.success(f"🎉 送信完了！{name}さんの1週間分（7日程）のシフト希望をすべてNotionへ同期しました。")
+            st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望をNotionへ同期しました。")
+            st.rerun()
         else:
             st.warning(f"一部送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件）")
 
+
 # ------------------------------------------
-# 2. 提出されたデータの確認画面（簡易版）
+# 2. 【大幅アップデート】シフト状況の可視化（管理者用）
 # ------------------------------------------
 st.markdown("---")
-st.header("📊 提出データ確認（簡易ビュー）")
+st.header("📊 2. シフト確認ダッシュボード（管理者用）")
 
-base_data = []
-query_url = f"https://api.notion.com/v1/blocks/{PAGE_ID}/children"
+# Notionから蓄積されたテキストブロックを取得して解析
+parsed_records = []
+query_url = f"https://api.notion.com/v1/blocks/{PAGE_ID}/children?page_size=100"
 response = requests.get(query_url, headers=headers)
 
 if response.status_code == 200:
     notion_data = response.json()
     for block in notion_data.get("results", []):
-        if block.get("type") == "child_page":
-            p_title = block["child_page"]["title"]
-            if "【シフト】" in p_title:
-                p_name = p_title.replace("【シフト】", "")
-                base_data.append(dict(スタッフ=p_name, ステータス="提出完了"))
+        if block.get("type") == "paragraph":
+            text_list = block["paragraph"]["rich_text"]
+            if text_list:
+                raw_text = text_list[0]["text"]["content"]
+                # データのパース処理
+                if "スタッフ:" in raw_text and "開始:" in raw_text:
+                    try:
+                        parts = raw_text.split(" | ")
+                        r_name = parts[0].split(":")[1]
+                        r_date = parts[1].split(":")[1].split("(")[0] # YYYY-MM-DD のみ抽出
+                        r_shift = parts[2].split(":")[1]
+                        r_start = parts[3].split(":")[1]
+                        r_end = parts[4].split(":")[1]
+                        
+                        if r_start != "-" and r_end != "-":
+                            parsed_records.append({
+                                "スタッフ": r_name,
+                                "日付": r_date,
+                                "シフト": r_shift,
+                                "開始": r_start,
+                                "終了": r_end
+                            })
+                    except Exception:
+                        continue
 
-if base_data:
-    df = pd.DataFrame(base_data).drop_duplicates()
-    st.dataframe(df, use_container_width=True)
+if parsed_records:
+    df_all = pd.DataFrame(parsed_records)
+    
+    # 🔍 管理者が確認したい曜日を選択するUI
+    st.subheader("曜日別 タイムライン確認")
+    selected_day_index = st.selectbox("確認したい曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
+    selected_date_str = target_dates[selected_day_index]
+    
+    # 選択された日付のデータのみにフィルタリング
+    df_filtered = df_all[df_all["日付"] == selected_date_str]
+    
+    if not df_filtered.empty:
+        # 🕒 個人名が主役のタイムライン図（ガントチャート）の作成
+        try:
+            fig = px.timeline(
+                df_filtered, 
+                x_start="開始", 
+                x_end="終了", 
+                y="スタッフ",      # 縦軸にハッキリと「個人名」を並べる
+                color="スタッフ",    # 個人ごとに色分けして見やすくする
+                text="スタッフ",     # バーの中、または横にも名前を表示
+                title=f"📅 {selected_date_str} ({week_days[selected_day_index]}曜日) の出勤可能時間"
+            )
+            fig.update_yaxes(autorange="reversed") # 上から順に綺麗に並べる
+            fig.update_layout(
+                xaxis=dict(
+                    title="時間帯",
+                    tickformat="%H:%M",
+                    dtick=1800000 * 2 # 1時間刻みで目盛りを表示
+                ),
+                showlegend=True
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # 詳細一覧表
+            st.subheader("該当日の提出データ一覧")
+            st.dataframe(df_filtered[["スタッフ", "シフト"]], use_container_width=True)
+            
+        except Exception as e:
+            st.error("タイムラインの描画中にエラーが発生しました。時間データを確認してください。")
+    else:
+        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。")
+
 else:
-    st.info("まだ今週の提出データはありません。")
+    st.info("Notionに解析可能なシフトデータがまだ蓄積されていません。上のフォームから送信テストをしてみてください！")
 
-st.link_button("Notionで直接確認する", f"https://app.notion.com/p/{PAGE_ID}")
+st.markdown("---")
+st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{PAGE_ID}")
