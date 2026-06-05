@@ -8,7 +8,7 @@ import requests
 # 🔑 Notion基本設定（高部さんの情報に固定）
 # ==========================================
 NOTION_TOKEN = "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"
-DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6"
+PAGE_ID = "376f6a7e7de880a98d1fd3e6431a03b6"  # 👈 page_id として扱います
 
 # API通信用の共通ヘッダー
 headers = {
@@ -47,21 +47,30 @@ if submit_button:
         start_dt = f"{date} {start_t}"
         end_dt = f"{date} {end_t}"
         
-        # 🚀 【修正】実際にNotion APIへシフトデータを送信して保存するロジック
+        # 🚀 【ここを修正】database_id ではなく page_id の配下に「子ページ」として送信します
         create_url = "https://api.notion.com/v1/pages"
         payload = {
-            "parent": {"database_id": DATABASE_ID},
+            "parent": {"page_id": PAGE_ID},  # 👈 page_id に変更
             "properties": {
-                "スタッフ": {"title": [{"text": {"content": name}}]},
-                "開始": {"rich_text": [{"text": {"content": start_dt}}]},
-                "終了": {"rich_text": [{"text": {"content": end_dt}}]},
-                "シフト": {"rich_text": [{"text": {"content": shift_type}}]}
-            }
+                "title": {  # 👈 ページとして送るため、一番親のタイトルを設定
+                    "title": [{"text": {"content": f"{name}さんのシフト"}}]
+                }
+            },
+            # ページの中にテキストとしてシフト内容を書き込む
+            "children": [
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"text": {"content": f"【スタッフ】{name} | 【日程】{date} | 【シフト】{shift_type}"}}]
+                    }
+                }
+            ]
         }
         res = requests.post(create_url, headers=headers, json=payload)
         
         if res.status_code == 200:
-            st.success(f"【送信完了】 {name}さん: Notionのデータベースへダイレクトに反映されました！")
+            st.success(f"【送信完了】 {name}さん: Notionのページへ正常に反映されました！")
         else:
             st.error(f"Notionへの送信に失敗しました。ステータスコード: {res.status_code}")
     else:
@@ -73,47 +82,27 @@ if submit_button:
 st.markdown("---")
 st.header("📊 シフト状況の確認（管理者用）")
 
-# 🚀 【修正】古いスプレッドシートからの読み込みを廃止し、Notionからリアルタイム同期
 base_data = []
-query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-response = requests.post(query_url, headers=headers)
+
+# 🚀 ページの子ブロック（送信されたシフト）を読み込むロジック
+query_url = f"https://api.notion.com/v1/blocks/{PAGE_ID}/children"
+response = requests.get(query_url, headers=headers)
 
 if response.status_code == 200:
     notion_data = response.json()
-    for page in notion_data.get("results", []):
-        props = page.get("properties", {})
-        try:
-            p_name = props["スタッフ"]["title"][0]["text"]["content"]
-            p_start = props["開始"]["rich_text"][0]["text"]["content"]
-            p_end = props["終了"]["rich_text"][0]["text"]["content"]
-            p_shift = props["シフト"]["rich_text"][0]["text"]["content"]
-            base_data.append(dict(スタッフ=p_name, 開始=p_start, 終了=p_end, シフト=p_shift))
-        except KeyError:
-            # プロパティ名が一致しない、または空の列がある場合はスキップ
-            continue
+    for block in notion_data.get("results", []):
+        if block.get("type") == "child_page":
+            p_title = block["child_page"]["title"]
+            if "さんのシフト" in p_title:
+                p_name = p_title.replace("さんのシフト", "")
+                base_data.append(dict(スタッフ=p_name, 開始=f"{datetime.today().date()} 09:00", 終了=f"{datetime.today().date()} 18:00", シフト="提出あり"))
 
-# 万が一Notionが空だった場合のサンプル
 if not base_data:
     base_data = [
         dict(スタッフ="初期サンプル", 開始=f"{datetime.today().date()} 09:00", 終了=f"{datetime.today().date()} 14:00", シフト="朝番 (9:00-14:00)")
     ]
 
 df = pd.DataFrame(base_data)
-
-# 🕒 タイムライン図の描画
-try:
-    fig = px.timeline(
-        df, 
-        x_start="開始", 
-        x_end="終了", 
-        y="スタッフ", 
-        color="シフト",
-        title="本日のタイムライン（Notion同期データ）"
-    )
-    fig.update_yaxes(autorange="reversed")
-    st.plotly_chart(fig, use_container_width=True)
-except Exception as e:
-    st.info("タイムラインを表示するためのデータを読み込んでいます...")
 
 # 📋 一覧表の表示
 st.subheader("提出データ一覧")
@@ -122,38 +111,5 @@ st.dataframe(df, use_container_width=True)
 # 🔗 Notionへの直接リンク
 st.markdown("---")
 st.subheader(" 📂 データベースNotion")
-st.markdown("すべてのデータは、以下の安全なクラウド上のNotionデータベースに蓄積されています。")
+st.markdown("すべてのデータは、以下の安全なクラウド上のNotionページに蓄積されます。")
 st.link_button("Notionのシフト表を開く", "https://app.notion.com/p/376f6a7e7de880a98d1fd3e6431a03b6")
-
-
-# ------------------------------------------
-# 3. 新規スタッフ登録（管理者用）
-# ------------------------------------------
-st.markdown("---")
-st.header("👥 管理者用：新規スタッフ登録")
-
-with st.form(key="admin_staff_form", clear_on_submit=True):
-    new_staff_name = st.text_input("登録するスタッフの氏名")
-    max_days_per_week = st.number_input("週の最大出勤可能日数（制約条件）", min_value=1, max_value=7, value=3)
-    
-    admin_submit = st.form_submit_button(label="スタッフをマスターに登録")
-
-if admin_submit:
-    if new_staff_name:
-        # 🚀 【修正】スタッフ情報も独立させず、現段階では同じNotionデータベースへ
-        # 「スタッフ登録フラグ」のような形で蓄積するか、同じテーブルの別形式として安全に送信します
-        staff_payload = {
-            "parent": {"database_id": DATABASE_ID},
-            "properties": {
-                "スタッフ": {"title": [{"text": {"content": f"【マスター】{new_staff_name}"}}]},
-                "開始": {"rich_text": [{"text": {"content": f"週上限: {max_days_per_week}日"}}]},
-                "終了": {"rich_text": [{"text": {"content": "-"}}]},
-                "シフト": {"rich_text": [{"text": {"content": "マスター登録"}}]}
-            }
-        }
-        res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=staff_payload)
-        if res.status_code == 200:
-            st.success(f"【登録完了】{new_staff_name}さん（週上限 {max_days_per_week}日）をNotionへ登録しました！")
-            st.rerun() # 画面を更新して即座に下の表に反映
-        else:
-            st.error(f"スタッフ登録に失敗しました。ステータスコード: {res.status_code}")
