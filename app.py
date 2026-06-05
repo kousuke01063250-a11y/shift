@@ -8,7 +8,7 @@ import requests
 # 🔑 Notion基本設定
 # ==========================================
 NOTION_TOKEN = "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"
-PAGE_ID = "376f6a7e7de880a98d1fd3e6431a03b6"
+DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6" # 👈 データベースIDとして扱います
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -84,23 +84,16 @@ if submit_button:
                 start_dt = f"{date_str} {info['start']}"
                 end_dt = f"{date_str} {info['end']}"
             
+            # 🚀 【ここを修正】親のページではなく、画像にある「新規データベース」の行として直接追加する設定
             create_url = "https://api.notion.com/v1/pages"
             payload = {
-                "parent": {"page_id": PAGE_ID},
+                "parent": {"database_id": DATABASE_ID}, # データベース指定に変更
                 "properties": {
-                    "title": {
-                        "title": [{"text": {"content": f"【シフト】{name}"}}]
-                    }
-                },
-                "children": [
-                    {
-                        "object": "block",
-                        "type": "paragraph",
-                        "paragraph": {
-                            "rich_text": [{"text": {"content": f"スタッフ:{name} | 日付:{date_str}({info['day_name']}) | シフト:{status_text} | 開始:{start_dt} | 終了:{end_dt}"}}]
-                        }
-                    }
-                ]
+                    "スタッフ": {"title": [{"text": {"content": name}}]},
+                    "開始": {"rich_text": [{"text": {"content": start_dt}}]},
+                    "終了": {"rich_text": [{"text": {"content": end_dt}}]},
+                    "シフト": {"rich_text": [{"text": {"content": status_text}}]}
+                }
             }
             res = requests.post(create_url, headers=headers, json=payload)
             if res.status_code == 200:
@@ -109,58 +102,47 @@ if submit_button:
                 error_count += 1
         
         if error_count == 0:
-            st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望をNotionへ同期しました。")
+            st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望をデータベースへ直接格納しました。")
             st.rerun()
         else:
-            st.warning(f"一部送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件）")
+            st.warning(f"一部送信に失敗しました（成功: {success_count}件, 失敗: {error_count}件。Notionの列名が『スタッフ』『開始』『終了』『シフト』かつすべてテキスト属性になっているか確認してください）")
 
 
 # ------------------------------------------
-# 2. シフト状況の可視化（管理者用デバッグ強化版）
+# 2. シフト状況の可視化（データベースクエリ版）
 # ------------------------------------------
 st.markdown("---")
 st.header("📊 2. シフト確認ダッシュボード（管理者用）")
 
 parsed_records = []
-debug_raw_texts = [] # パースに失敗した生の文字を突っ込む箱
 
-query_url = f"https://api.notion.com/v1/blocks/{PAGE_ID}/children?page_size=100"
-response = requests.get(query_url, headers=headers)
+# 🚀 データベースから直接全レコードをクエリ（検索）して取得するロジックに変更
+query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+response = requests.post(query_url, headers=headers)
 
 if response.status_code == 200:
     notion_data = response.json()
-    blocks = notion_data.get("results", [])
-    
-    for block in reversed(blocks):
-        if block.get("type") == "paragraph":
-            text_list = block["paragraph"]["rich_text"]
-            if text_list:
-                raw_text = text_list[0]["text"]["content"]
-                debug_raw_texts.append(raw_text) # デバッグ用に全テキストを記録
-                
-                # 🚀 【パース強化】より安全に、かつ柔軟に文字列を抽出
-                if "スタッフ:" in raw_text and "開始:" in raw_text:
-                    try:
-                        # 区切り文字 `|` で分解
-                        parts = [p.strip() for p in raw_text.split("|")]
-                        
-                        # それぞれの要素から値を取り出す
-                        r_name = [p for p in parts if "スタッフ:" in p][0].split(":")[1].strip()
-                        r_date = [p for p in parts if "日付:" in p][0].split(":")[1].split("(")[0].strip()
-                        r_shift = [p for p in parts if "シフト:" in p][0].split(":")[1].strip()
-                        r_start = [p for p in parts if "開始:" in p][0].split(":")[1].strip()
-                        r_end = [p for p in parts if "終了:" in p][0].split(":")[1].strip()
-                        
-                        if r_start != "-" and r_end != "-":
-                            parsed_records.append({
-                                "スタッフ": r_name,
-                                "日付": r_date,
-                                "シフト": r_shift,
-                                "開始": r_start,
-                                "終了": r_end
-                            })
-                    except Exception as e:
-                        continue
+    for page in notion_data.get("results", []):
+        props = page.get("properties", {})
+        try:
+            # 各プロパティからデータを安全に抽出
+            r_name = props["スタッフ"]["title"][0]["text"]["content"]
+            r_start = props["開始"]["rich_text"][0]["text"]["content"]
+            r_end = props["終了"]["rich_text"][0]["text"]["content"]
+            r_shift = props["シフト"]["rich_text"][0]["text"]["content"]
+            
+            # 日付文字列（YYYY-MM-DD）を取得
+            if r_start != "-" and r_end != "-":
+                r_date = r_start.split(" ")[0]
+                parsed_records.append({
+                    "スタッフ": r_name,
+                    "日付": r_date,
+                    "シフト": r_shift,
+                    "開始": r_start,
+                    "終了": r_end
+                })
+        except (KeyError, IndexError):
+            continue
 
 # --- 画面描画ロジック ---
 if parsed_records:
@@ -196,15 +178,7 @@ if parsed_records:
         st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。※『終日休み』以外の希望があるか確認してください。")
 
 else:
-    # 🔍 【超重要】パースに失敗している場合、Notionから何が取れているかを画面に出す
-    st.warning("⚠️ Notionからデータは取得できましたが、解析（パース）に失敗しているか、データ形式が一致しません。")
-    if debug_raw_texts:
-        st.subheader("🛠️ デバッグ情報：Notionから取得した生のテキストデータ")
-        st.write("Pythonが読み込んでいる実際の文字は以下です。これらを解析できるようにプログラムを即座にチューニングします：")
-        for txt in debug_raw_texts[:5]: # 直近5件を表示
-            st.code(txt)
-    else:
-        st.info("Notionのページ内に、まだテキストブロック（シフトデータ）が見つかりません。")
+    st.info("Notionのデータベース内に、まだ有効なシフトデータ（開始・終了時間があるレコード）が見つかりません。上のフォームから送信してみてください。")
 
 st.markdown("---")
-st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{PAGE_ID}")
+st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{DATABASE_ID}")
