@@ -101,9 +101,9 @@ st.dataframe(df, use_container_width=True)
 
 # 🔗 スプレッドシートへのリンクボタン
 st.markdown("---")
-st.subheader(" データベース（Googleスプレッドシート）")
+st.subheader(" データベースnotion")
 st.markdown("すべての確定データは、以下の安全なクラウド上のスプレッドシートに蓄積されます。")
-st.link_button("Googleスプレッドシートを開く", SPREADSHEET_URL)
+st.link_button("Notionのシフト表を開く", "https://app.notion.com/p/376f6a7e7de880a98d1fd3e6431a03b6")
 
 
 # 管理者用ページ、またはタブの切り替え内
