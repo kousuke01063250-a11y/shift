@@ -4,14 +4,10 @@ import plotly.express as px
 from datetime import datetime
 import requests
 
-# ==========================================
-# 🔗 設定済みのGoogleスプレッドシートURL
-# ==========================================
-# ==========================================
-# 🔑 コピーしたNotionの情報をここに貼り付けます
-# ==========================================
-NOTION_TOKEN = "ここに ntn_... で始まるトークンを貼り付け"
-DATABASE_ID = "ここにURLから抜いた32文字のデータベースIDを貼り付け"
+
+NOTION_TOKEN = "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"
+DATABASE_ID = "376f6a7e7de880a98d1fd3e6431a03b6"
+
 
 # スプレッドシートのデータを読み込むためのCSV変換URL
 CSV_URL = "https://docs.google.com/spreadsheets/d/1FKhyvZlNhpUmtvgRuYDtLErYgwydHWAWHMa_Nvpor00/gviz/tq?tqx=out:csv"
