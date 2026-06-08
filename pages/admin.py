@@ -8,39 +8,36 @@ import requests
 st.set_page_config(page_title="シフト確認ダッシュボード", layout="wide")
 
 # ==========================================
-# 🔒 簡易パスワード認証機能
+# 🔒 確実なパスワード認証機能
 # ==========================================
+# セッション状態の初期化
+if "password_correct" not in st.session_state:
+    st.session_state["password_correct"] = False
+
 def check_password():
     """正しいパスワードが入力されたらTrueを返す"""
-    def password_entered():
-        """入力されたパスワードを検証する内部関数"""
-        # 🔑 お好きなパスワードに変更してください（現在は "admin123" になっています）
-        if st.session_state["password"] == "admin123":
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # セキュリティのため入力値を消去
-        else:
-            st.session_state["password_correct"] = False
-
-    # すでに認証済みの場合はスキップ
-    if st.session_state.get("password_correct", False):
+    
+    # すでに認証済みの場合は即座にTrueを返す
+    if st.session_state["password_correct"]:
         return True
 
-    # パスワード入力フォームの画面を表示
     st.title("🔒 管理者認証")
     st.warning("このページにアクセスするには管理用パスワードが必要です。")
-    st.text_input(
-        "パスワードを入力してください", 
-        type="password", 
-        on_change=password_entered, 
-        key="password"
-    )
     
-    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-        st.error("😕 パスワードが違います。もう一度入力してください。")
-        
+    # 入力フォーム（Enterキーを押すか、枠外をクリックすると確定します）
+    input_password = st.text_input("パスワードを入力してください", type="password")
+    
+    if input_password:
+        # 🔑 お好きなパスワードに変更してください（現在は "admin123"）
+        if input_password == "admin123":
+            st.session_state["password_correct"] = True
+            st.rerun() # 画面を即座に再描写してダッシュボードを表示
+        else:
+            st.error("😕 パスワードが違います。もう一度入力してください。")
+            
     return False
 
-# パスワードチェックが通らない場合は、これ以降のコードを実行せずに終了する
+# パスワードチェックが通らない場合は、以降のコードを絶対に実行しない
 if not check_password():
     st.stop()
 
