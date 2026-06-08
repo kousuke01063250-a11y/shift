@@ -1,14 +1,11 @@
 import streamlit as st
-import pandas as pd
-import plotly.express as px
 from datetime import datetime, timedelta
 import requests
 
 # ==========================================
-# 🔑 Notion基本設定（解析した確定IDを適用）
+# 🔑 Notion基本設定
 # ==========================================
 NOTION_TOKEN = "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"
-# 🚀 URLから抽出した「本物のデータベースID」に修正しました
 DATABASE_ID = "376f6a7e7de880279373de917797c6ff"  
 
 headers = {
@@ -17,8 +14,9 @@ headers = {
     "Notion-Version": "2022-06-28"
 }
 
-st.set_page_config(page_title="1週間シフト管理システム", layout="wide")
-st.title("📅 1週間一括・30分単位 シフト管理システム")
+# ページ設定（スタッフ用）
+st.set_page_config(page_title="シフト提出フォーム", layout="centered")
+st.title("📝 シフト希望 提出フォーム")
 
 # ------------------------------------------
 # 💡 自動で「来週の月曜日」の日付を計算するロジック
@@ -32,18 +30,18 @@ next_monday = today + timedelta(days=days_until_next_monday)
 week_days = ["月", "火", "水", "木", "金", "土", "日"]
 target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
-# ------------------------------------------
-# 1. シフト提出フォーム（スタッフ用）
-# ------------------------------------------
-st.header("1. シフト希望の入力（スタッフ用）")
 st.info(f"現在の提出対象：**{next_monday.strftime('%Y年%m月%d日')}（月）** 〜 **{(next_monday + timedelta(days=6)).strftime('%Y年%m月%d日')}（日）** の1週間分")
 
+# 時間スロット生成 (30分単位)
 time_slots = []
 for hour in range(9, 22):
     time_slots.append(f"{hour:02d}:00")
     time_slots.append(f"{hour:02d}:30")
 time_slots.append("22:00")
 
+# ------------------------------------------
+# シフト提出フォーム
+# ------------------------------------------
 with st.form(key="weekly_shift_form", clear_on_submit=False):
     name = st.text_input("お名前（フルネーム）", placeholder="例：高部 光佑")
     st.markdown("---")
@@ -103,73 +101,5 @@ if submit_button:
         
         if error_count == 0:
             st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望を同期しました。")
-            st.rerun()
         else:
-            st.error(f"送信に失敗しました。Notionの列名（スタッフ、開始、終了、シフト）が完全に一致しているか確認してください。")
-
-
-# ------------------------------------------
-# 2. シフト状況の可視化（管理者用ビュー）
-# ------------------------------------------
-st.markdown("---")
-st.header("📊 2. シフト確認ダッシュボード（管理者用）")
-
-parsed_records = []
-query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-response = requests.post(query_url, headers=headers)
-
-if response.status_code == 200:
-    notion_data = response.json()
-    for page in notion_data.get("results", []):
-        props = page.get("properties", {})
-        try:
-            r_name = props["スタッフ"]["title"][0]["text"]["content"]
-            r_start = props["開始"]["rich_text"][0]["text"]["content"]
-            r_end = props["終了"]["rich_text"][0]["text"]["content"]
-            r_shift = props["シフト"]["rich_text"][0]["text"]["content"]
-            
-            if r_start != "-" and r_end != "-":
-                r_date = r_start.split(" ")[0]
-                parsed_records.append({
-                    "スタッフ": r_name,
-                    "日付": r_date,
-                    "シフト": r_shift,
-                    "開始": r_start,
-                    "終了": r_end
-                })
-        except (KeyError, IndexError):
-            continue
-
-if parsed_records:
-    df_all = pd.DataFrame(parsed_records)
-    
-    st.subheader("曜日別 タイムライン確認")
-    selected_day_index = st.selectbox("確認したい曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
-    selected_date_str = target_dates[selected_day_index]
-    
-    df_filtered = df_all[df_all["日付"] == selected_date_str]
-    
-    if not df_filtered.empty:
-        try:
-            fig = px.timeline(
-                df_filtered, 
-                x_start="開始", 
-                x_end="終了", 
-                y="スタッフ",      
-                color="スタッフ",    
-                text="スタッフ",     
-                title=f"📅 {selected_date_str} ({week_days[selected_day_index]}曜日) の出勤可能時間"
-            )
-            fig.update_yaxes(autorange="reversed") 
-            fig.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"), showlegend=True)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            st.subheader("該当日の提出データ一覧")
-            st.dataframe(df_filtered[["スタッフ", "シフト"]], use_container_width=True)
-            
-        except Exception as e:
-            st.error(f"タイムラインの描画中にエラーが発生しました: {e}")
-    else:
-        st.info(f"選択された日（{selected_date_str}）に出勤可能なスタッフはいません。")
-else:
-    st.info("Notionのデータベース内にシフトデータが見つかりません。上のフォームから送信してみてください。")
+            st.error("送信に失敗しました。管理者にお問い合わせください。")
