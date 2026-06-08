@@ -14,9 +14,21 @@ headers = {
     "Notion-Version": "2022-06-28"
 }
 
-# ページ設定（スタッフ用）
+# ページ設定（スタッフの提出フォーム専用）
 st.set_page_config(page_title="シフト提出フォーム", layout="centered")
 st.title("📝 シフト希望 提出フォーム")
+
+# ------------------------------------------
+# 👥 【最適化】登録スタッフのマスターデータ
+# ------------------------------------------
+# 💡 メンバーが増減した場合は、ここのリストの文字を書き換えるだけで自動反映されます
+STAFF_LIST = [
+    "選択してください",  # 初期値のバリデーション用
+    "高部 光佑",
+    "スタッフA",
+    "スタッフB",
+    "スタッフC"
+]
 
 # ------------------------------------------
 # 💡 自動で「来週の月曜日」の日付を計算するロジック
@@ -32,7 +44,7 @@ target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in 
 
 st.info(f"現在の提出対象：**{next_monday.strftime('%Y年%m月%d日')}（月）** 〜 **{(next_monday + timedelta(days=6)).strftime('%Y年%m月%d日')}（日）** の1週間分")
 
-# 時間スロット生成 (30分単位)
+# 30分単位の時間枠を作成
 time_slots = []
 for hour in range(9, 22):
     time_slots.append(f"{hour:02d}:00")
@@ -40,10 +52,11 @@ for hour in range(9, 22):
 time_slots.append("22:00")
 
 # ------------------------------------------
-# シフト提出フォーム
+# シフト提出フォーム本体
 # ------------------------------------------
 with st.form(key="weekly_shift_form", clear_on_submit=False):
-    name = st.text_input("お名前（フルネーム）", placeholder="例：高部 光佑")
+    # 💡 テキスト入力から「セレクトボックス」に変更
+    name = st.selectbox("あなたのお名前を選択してください", STAFF_LIST, index=0)
     st.markdown("---")
     
     tabs = st.tabs([f"{d}曜日" for d in week_days])
@@ -66,10 +79,43 @@ with st.form(key="weekly_shift_form", clear_on_submit=False):
     st.markdown("---")
     submit_button = st.form_submit_button(label="🚀 1週間分のシフトをまとめて提出する")
 
+# ------------------------------------------
+# 🚀 送信・重複データ上書きロジック
+# ------------------------------------------
 if submit_button:
-    if not name:
-        st.error("お名前を入力してください。")
+    if name == "選択してください":
+        st.error("お名前を正しく選択してください。")
     else:
+        # 🔄 同じスタッフの「来週分」の既存データを事前に検索してアーカイブする
+        query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+        
+        filter_payload = {
+            "filter": {
+                "property": "スタッフ",
+                "title": {
+                    "equals": name
+                }
+            }
+        }
+        
+        search_res = requests.post(query_url, headers=headers, json=filter_payload)
+        
+        if search_res.status_code == 200:
+            existing_pages = search_res.json().get("results", [])
+            for page in existing_pages:
+                page_id = page.get("id")
+                props = page.get("properties", {})
+                try:
+                    r_start = props["開始"]["rich_text"][0]["text"]["content"]
+                    if r_start != "-":
+                        record_date = r_start.split(" ")[0]
+                        if record_date in target_dates:
+                            update_url = f"https://api.notion.com/v1/pages/{page_id}"
+                            requests.patch(update_url, headers=headers, json={"archived": True})
+                except (KeyError, IndexError):
+                    continue
+
+        # ✍️ 最新のシフトデータを新規保存
         success_count = 0
         error_count = 0
         
@@ -100,6 +146,6 @@ if submit_button:
                 error_count += 1
         
         if error_count == 0:
-            st.success(f"🎉 送信完了！{name}さんの1週間分のシフト希望を同期しました。")
+            st.success(f"🎉 送信完了！{name}さんの最新の1週間分のシフト希望に上書き・同期しました。")
         else:
             st.error("送信に失敗しました。管理者にお問い合わせください。")
