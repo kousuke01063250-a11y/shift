@@ -47,11 +47,52 @@ headers = {
     "Notion-Version": "2022-06-28"
 }
 
+# ------------------------------------------
+# 🧹 【自動クレンジング機能】3週間前（21日前）より古いデータをアーカイブ
+# ------------------------------------------
+def auto_clean_past_data():
+    query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+    res = requests.post(query_url, headers=headers)
+    
+    if res.status_code == 200:
+        notion_data = res.json()
+        
+        # 💡 今日から数えて21日前（3週間前）の日付の基準線（しきい値）を計算
+        three_weeks_ago = datetime.today() - timedelta(days=21)
+        threshold_date_str = three_weeks_ago.strftime("%Y-%m-%d")
+        
+        cleaned_count = 0
+        
+        for page in notion_data.get("results", []):
+            page_id = page.get("id")
+            props = page.get("properties", {})
+            try:
+                r_start = props["開始"]["rich_text"][0]["text"]["content"]
+                if r_start != "-":
+                    # 「2026-06-15 09:00」から日付部分だけを抽出
+                    record_date = r_start.split(" ")[0]
+                    
+                    # 💡 記録された日付が、3週間前の基準日よりもさらに古い（過去の）場合のみアーカイブ
+                    if record_date < threshold_date_str:
+                        update_url = f"https://api.notion.com/v1/pages/{page_id}"
+                        requests.patch(update_url, headers=headers, json={"archived": True})
+                        cleaned_count += 1
+            except (KeyError, IndexError):
+                continue
+        
+        # クレンジングが行われた場合、管理者に右下ポップアップで通知
+        if cleaned_count > 0:
+            st.toast(f"🧹 3週間以上前の古いデータ {cleaned_count} 件を自動アーカイブしました。")
+
+# 管理画面が開かれた瞬間に自動実行
+auto_clean_past_data()
+
+# ==========================================
+# 📊 ここからダッシュボードの描画
+# ==========================================
 st.title("📊 シフト確認ダッシュボード（管理者用）")
 
-# ------------------------------------------
-# 💡 日付計算ロジック
-# ------------------------------------------
+# 日付計算ロジック
 today = datetime.today()
 days_until_next_monday = (0 - today.weekday()) % 7
 if days_until_next_monday == 0:
@@ -61,9 +102,7 @@ next_monday = today + timedelta(days=days_until_next_monday)
 week_days = ["月", "火", "水", "木", "金", "土", "日"]
 target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
-# ------------------------------------------
-# シフトデータの読み込みと可視化
-# ------------------------------------------
+# 最新データの読み込み
 parsed_records = []
 query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
 response = requests.post(query_url, headers=headers)
