@@ -4,8 +4,48 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import requests
 
+# ページ設定（管理者用）
+st.set_page_config(page_title="シフト確認ダッシュボード", layout="wide")
+
 # ==========================================
-# 🔑 Notion基本設定
+# 🔒 簡易パスワード認証機能
+# ==========================================
+def check_password():
+    """正しいパスワードが入力されたらTrueを返す"""
+    def password_entered():
+        """入力されたパスワードを検証する内部関数"""
+        # 🔑 お好きなパスワードに変更してください（現在は "admin123" になっています）
+        if st.session_state["password"] == "admin123":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # セキュリティのため入力値を消去
+        else:
+            st.session_state["password_correct"] = False
+
+    # すでに認証済みの場合はスキップ
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # パスワード入力フォームの画面を表示
+    st.title("🔒 管理者認証")
+    st.warning("このページにアクセスするには管理用パスワードが必要です。")
+    st.text_input(
+        "パスワードを入力してください", 
+        type="password", 
+        on_change=password_entered, 
+        key="password"
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 パスワードが違います。もう一度入力してください。")
+        
+    return False
+
+# パスワードチェックが通らない場合は、これ以降のコードを実行せずに終了する
+if not check_password():
+    st.stop()
+
+# ==========================================
+# 🔑 Notion基本設定（ここからは認証が通った場合のみ実行されます）
 # ==========================================
 NOTION_TOKEN = "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"
 DATABASE_ID = "376f6a7e7de880279373de917797c6ff"  
@@ -16,8 +56,6 @@ headers = {
     "Notion-Version": "2022-06-28"
 }
 
-# ページ設定（管理者用）
-st.set_page_config(page_title="シフト確認ダッシュボード", layout="wide")
 st.title("📊 シフト確認ダッシュボード（管理者用）")
 
 # ------------------------------------------
