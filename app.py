@@ -6,7 +6,8 @@ import requests
 # 🔑 Notion基本設定
 # ==========================================
 NOTION_TOKEN = "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"
-DATABASE_ID = "376f6a7e7de880279373de917797c6ff"  
+SHIFT_DB_ID = "376f6a7e7de880279373de917797c6ff"      # シフト保存用DB
+STAFF_DB_ID = "379f6a7e7de880a9ab76e859e099c7e0"      # ✨新設：スタッフ一覧用DB
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -14,21 +15,36 @@ headers = {
     "Notion-Version": "2022-06-28"
 }
 
-# ページ設定（スタッフの提出フォーム専用）
+# ページ設定
 st.set_page_config(page_title="シフト提出フォーム", layout="centered")
 st.title("📝 シフト希望 提出フォーム")
 
 # ------------------------------------------
-# 👥 【最適化】登録スタッフのマスターデータ
+# 👥 【最適化】Notionからリアルタイムにスタッフ名を取得
 # ------------------------------------------
-# 💡 メンバーが増減した場合は、ここのリストの文字を書き換えるだけで自動反映されます
-STAFF_LIST = [
-    "選択してください",  # 初期値のバリデーション用
-    "高部 光佑",
-    "スタッフA",
-    "スタッフB",
-    "スタッフC"
-]
+def get_staff_from_notion():
+    query_url = f"https://api.notion.com/v1/databases/{STAFF_DB_ID}/query"
+    # 名前順にA-Zソートして取得
+    payload = {
+        "sorts": [{"property": "名前", "direction": "ascending"}]
+    }
+    res = requests.post(query_url, headers=headers, json=payload)
+    
+    staff_options = ["選択してください"]
+    if res.status_code == 200:
+        results = res.json().get("results", [])
+        for page in results:
+            props = page.get("properties", {})
+            try:
+                # 一番左の列（名前）のテキストを取得
+                name_text = props["名前"]["title"][0]["text"]["content"]
+                staff_options.append(name_text)
+            except (KeyError, IndexError):
+                continue
+    return staff_options
+
+# 画面ロード時にNotionから最新のリストを吸い出す
+staff_list = get_staff_from_notion()
 
 # ------------------------------------------
 # 💡 自動で「来週の月曜日」の日付を計算するロジック
@@ -44,7 +60,7 @@ target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in 
 
 st.info(f"現在の提出対象：**{next_monday.strftime('%Y年%m月%d日')}（月）** 〜 **{(next_monday + timedelta(days=6)).strftime('%Y年%m月%d日')}（日）** の1週間分")
 
-# 30分単位の時間枠を作成
+# 30分単位の時間枠
 time_slots = []
 for hour in range(9, 22):
     time_slots.append(f"{hour:02d}:00")
@@ -55,8 +71,8 @@ time_slots.append("22:00")
 # シフト提出フォーム本体
 # ------------------------------------------
 with st.form(key="weekly_shift_form", clear_on_submit=False):
-    # 💡 テキスト入力から「セレクトボックス」に変更
-    name = st.selectbox("あなたのお名前を選択してください", STAFF_LIST, index=0)
+    # Notionから取ってきた最新のリストをセレクトボックスに適用
+    name = st.selectbox("あなたのお名前を選択してください", staff_list, index=0)
     st.markdown("---")
     
     tabs = st.tabs([f"{d}曜日" for d in week_days])
@@ -86,18 +102,14 @@ if submit_button:
     if name == "選択してください":
         st.error("お名前を正しく選択してください。")
     else:
-        # 🔄 同じスタッフの「来週分」の既存データを事前に検索してアーカイブする
-        query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
-        
+        # 重複データを事前に検索してアーカイブ（シフト用DBを検索）
+        query_url = f"https://api.notion.com/v1/databases/{SHIFT_DB_ID}/query"
         filter_payload = {
             "filter": {
                 "property": "スタッフ",
-                "title": {
-                    "equals": name
-                }
+                "title": { "equals": name }
             }
         }
-        
         search_res = requests.post(query_url, headers=headers, json=filter_payload)
         
         if search_res.status_code == 200:
@@ -115,7 +127,7 @@ if submit_button:
                 except (KeyError, IndexError):
                     continue
 
-        # ✍️ 最新のシフトデータを新規保存
+        # 最新のシフトデータを新規保存
         success_count = 0
         error_count = 0
         
@@ -131,7 +143,7 @@ if submit_button:
             
             create_url = "https://api.notion.com/v1/pages"
             payload = {
-                "parent": {"database_id": DATABASE_ID}, 
+                "parent": {"database_id": SHIFT_DB_ID}, 
                 "properties": {
                     "スタッフ": {"title": [{"text": {"content": name}}]},
                     "開始": {"rich_text": [{"text": {"content": start_dt}}]},
