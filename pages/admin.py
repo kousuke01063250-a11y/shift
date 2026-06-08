@@ -39,7 +39,8 @@ if not check_password():
 # 🔑 Notion基本設定
 # ==========================================
 NOTION_TOKEN = "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"
-DATABASE_ID = "376f6a7e7de880279373de917797c6ff"  
+SHIFT_DB_ID = "376f6a7e7de880279373de917797c6ff"      # シフト保存用DB
+STAFF_DB_ID = "379f6a7e7de880a9ab76e859e099c7e0"      # ✨新設：スタッフ一覧用DB
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -51,28 +52,23 @@ headers = {
 # 🧹 【自動クレンジング機能】3週間前（21日前）より古いデータをアーカイブ
 # ------------------------------------------
 def auto_clean_past_data():
-    query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+    query_url = f"https://api.notion.com/v1/databases/{SHIFT_DB_ID}/query"
     res = requests.post(query_url, headers=headers)
     
     if res.status_code == 200:
         notion_data = res.json()
         
-        # 💡 今日から数えて21日前（3週間前）の日付の基準線（しきい値）を計算
         three_weeks_ago = datetime.today() - timedelta(days=21)
         threshold_date_str = three_weeks_ago.strftime("%Y-%m-%d")
         
         cleaned_count = 0
-        
         for page in notion_data.get("results", []):
             page_id = page.get("id")
             props = page.get("properties", {})
             try:
                 r_start = props["開始"]["rich_text"][0]["text"]["content"]
                 if r_start != "-":
-                    # 「2026-06-15 09:00」から日付部分だけを抽出
                     record_date = r_start.split(" ")[0]
-                    
-                    # 💡 記録された日付が、3週間前の基準日よりもさらに古い（過去の）場合のみアーカイブ
                     if record_date < threshold_date_str:
                         update_url = f"https://api.notion.com/v1/pages/{page_id}"
                         requests.patch(update_url, headers=headers, json={"archived": True})
@@ -80,12 +76,12 @@ def auto_clean_past_data():
             except (KeyError, IndexError):
                 continue
         
-        # クレンジングが行われた場合、管理者に右下ポップアップで通知
         if cleaned_count > 0:
             st.toast(f"🧹 3週間以上前の古いデータ {cleaned_count} 件を自動アーカイブしました。")
 
 # 管理画面が開かれた瞬間に自動実行
 auto_clean_past_data()
+
 
 # ==========================================
 # 📊 ここからダッシュボードの描画
@@ -102,9 +98,9 @@ next_monday = today + timedelta(days=days_until_next_monday)
 week_days = ["月", "火", "水", "木", "金", "土", "日"]
 target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
-# 最新データの読み込み
+# 最新シフトデータの読み込み
 parsed_records = []
-query_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+query_url = f"https://api.notion.com/v1/databases/{SHIFT_DB_ID}/query"
 response = requests.post(query_url, headers=headers)
 
 if response.status_code == 200:
@@ -163,5 +159,71 @@ if parsed_records:
 else:
     st.info("Notionのデータベース内に有効なシフトデータが見つかりません。")
 
+
+# ==========================================
+# 👥 ✨【新設】GUIスタッフマスター管理機能
+# ==========================================
 st.markdown("---")
-st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{DATABASE_ID}")
+st.header("👥 スタッフアカウント管理")
+
+# 1. 現在登録されているスタッフをNotionから取得
+staff_query_url = f"https://api.notion.com/v1/databases/{STAFF_DB_ID}/query"
+staff_res = requests.post(staff_query_url, headers=headers, json={"sorts": [{"property": "名前", "direction": "ascending"}]})
+
+current_staff = {}
+if staff_res.status_code == 200:
+    for page in staff_res.json().get("results", []):
+        page_id = page.get("id")
+        try:
+            name_text = page["properties"]["名前"]["title"][0]["text"]["content"]
+            current_staff[name_text] = page_id
+        except (KeyError, IndexError):
+            continue
+
+# 2. 画面への表示と操作
+col_add, col_del = st.columns(2)
+
+with col_add:
+    st.subheader("➕ スタッフの新規追加")
+    new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：高部 光佑")
+    if st.button("➕ このスタッフを追加する", use_container_width=True):
+        if not new_staff_name:
+            st.error("氏名を入力してください。")
+        elif new_staff_name in current_staff:
+            st.warning(f"「{new_staff_name}」さんは既に登録されています。")
+        else:
+            # NotionのスタッフDBへ書き込み
+            create_url = "https://api.notion.com/v1/pages"
+            payload = {
+                "parent": {"database_id": STAFF_DB_ID},
+                "properties": {
+                    "名前": {"title": [{"text": {"content": new_staff_name}}]}
+                }
+            }
+            res = requests.post(create_url, headers=headers, json=payload)
+            if res.status_code == 200:
+                st.success(f"🎉 「{new_staff_name}」さんをマスターに登録しました！")
+                st.rerun()
+            else:
+                st.error("Notionへの追加に失敗しました。")
+
+with col_del:
+    st.subheader("🗑️ スタッフの削除")
+    if current_staff:
+        del_target = st.selectbox("削除するスタッフを選択してください", list(current_staff.keys()))
+        if st.button("🗑️ このスタッフを削除する", use_container_width=True):
+            target_page_id = current_staff[del_target]
+            # Notionの該当ページをアーカイブ（ごみ箱へ）
+            archive_url = f"https://api.notion.com/v1/pages/{target_page_id}"
+            res = requests.patch(archive_url, headers=headers, json={"archived": True})
+            if res.status_code == 200:
+                st.success(f"🗑️ 「{del_target}」さんの登録を削除しました。")
+                st.rerun()
+            else:
+                st.error("Notionからの削除に失敗しました。")
+    else:
+        st.info("現在、登録されているスタッフはいません。")
+
+
+st.markdown("---")
+st.link_button("Notionで直接生データを確認する", f"https://app.notion.com/p/{SHIFT_DB_ID}")
