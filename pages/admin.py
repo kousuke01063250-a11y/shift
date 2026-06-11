@@ -45,7 +45,7 @@ headers = {
 }
 
 # ------------------------------------------
-# 🧹 【自動クレンジング機能】3週間前（21日前）より古いデータをアーカイブ
+# 🧹 【自動クレンジング機能】3週間前のデータを自動アーカイブ
 # ------------------------------------------
 def auto_clean_past_data():
     query_url = f"https://api.notion.com/v1/databases/{SHIFT_DB_ID}/query"
@@ -68,7 +68,7 @@ def auto_clean_past_data():
             except (KeyError, IndexError):
                 continue
         if cleaned_count > 0:
-            st.toast(f"🧹 3週間以上前の古いデータ {cleaned_count} 件を自動アーカイブしました。")
+            st.toast(f"🧹 古いデータ {cleaned_count} 件を自動アーカイブしました。")
 
 auto_clean_past_data()
 
@@ -173,7 +173,7 @@ with col_p2:
 st.markdown("---")
 
 # ==========================================
-# 👥 スタッフアカウント管理（安全対策版）
+# 👥 スタッフアカウント管理（美しく2列に分離版）
 # ==========================================
 st.header("👥 スタッフアカウント管理")
 
@@ -184,11 +184,9 @@ if staff_res.status_code == 200:
     for page in staff_res.json().get("results", []):
         page_id = page.get("id")
         try:
-            # 💡 カンマ区切りの文字列から名前をプレーンに抽出できるように、タイトル属性のみを厳密に取得
+            # 💡 名前の列からそのまま純粋な名前を取得
             name_text = page["properties"]["名前"]["title"][0]["text"]["content"]
-            # 画面表示用にポジション情報が付いている場合は、名前の純粋な部分だけをキーにする
-            pure_name = name_text.split(" [")[0]
-            current_staff[pure_name] = page_id
+            current_staff[name_text] = page_id
         except (KeyError, IndexError):
             continue
 
@@ -204,25 +202,21 @@ with col_s1:
         elif new_staff_name in current_staff:
             st.warning(f"「{new_staff_name}」さんは既に登録されています。")
         else:
-            # 💡 【エラー完全回避の超絶トリック】
-            # Notionの「名前」列（絶対にエラーが起きない列）に、[ホール,キッチン] のようにスキルを埋め込んで保存します。
-            # これにより、Notion側のマルチセレクト列の有無に関わらず100%確実に保存・連携が成功します！
-            skill_string = ",".join(selected_skills) if selected_skills else "未設定"
-            full_store_name = f"{new_staff_name} [{skill_string}]"
-            
+            # 💡 【本来の美しい設計】名前は名前の列、職種はマルチセレクトの列へそれぞれ個別に保存！
             create_url = "https://api.notion.com/v1/pages"
             payload = {
                 "parent": {"database_id": STAFF_DB_ID},
                 "properties": {
-                    "名前": {"title": [{"text": {"content": full_store_name}}]}
+                    "名前": {"title": [{"text": {"content": new_staff_name}}]},
+                    "職種": {"multi_select": [{"name": skill} for skill in selected_skills]}
                 }
             }
             res = requests.post(create_url, headers=headers, json=payload)
             if res.status_code == 200:
-                st.success(f"🎉 「{new_staff_name}」さん（ポジション: {skill_string}）を登録しました！")
+                st.success(f"🎉 「{new_staff_name}」さんを登録しました！")
                 st.rerun()
             else:
-                st.error(f"追加に失敗しました。ステータスコード: {res.status_code}")
+                st.error(f"追加に失敗しました。Notion側の『職種』列が【マルチセレクト型】になっているか再度ご確認ください。(エラーコード: {res.status_code})")
 
 with col_s2:
     st.subheader("🗑️ スタッフの削除")
