@@ -4,7 +4,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import requests
 
-# 💡 最適化ライブラリのインポートチェック
+# 最適化ライブラリのインポートチェック
 try:
     import pulp
     PULP_AVAILABLE = True
@@ -112,11 +112,17 @@ if response.status_code == 200:
             r_shift = props["シフト"]["rich_text"][0]["text"]["content"]
             
             if r_start != "-" and r_end != "-":
+                s_info = staff_info_dict.get(r_name, {"skills": [], "power": 1})
+                display_name = f"{r_name} (💪戦闘力:{s_info['power']})"
+                
                 parsed_records.append({
                     "純粋な名前": r_name,
+                    "スタッフ": display_name,
                     "日付": r_start.split(" ")[0],
-                    "開始時刻": datetime.strptime(r_start, "%Y-%m-%d %H:%M"),
-                    "終了時刻": datetime.strptime(r_end, "%Y-%m-%d %H:%M"),
+                    "開始": r_start,  # ✨ 修正ポイント：Plotly用の「文字列日時」を保持
+                    "終了": r_end,    # ✨ 修正ポイント：Plotly用の「文字列日時」を保持
+                    "開始時刻": datetime.strptime(r_start, "%Y-%m-%d %H:%M"), # 最適化用
+                    "終了時刻": datetime.strptime(r_end, "%Y-%m-%d %H:%M"), # 最適化用
                     "シフト": r_shift
                 })
         except (KeyError, IndexError):
@@ -147,10 +153,10 @@ st.markdown("---")
 # ==========================================
 # 🧠 3. 数理最適化（MIP）エンジン
 # ==========================================
-st.header("🤖 最適化シフト生成エンジン")
+st.header("🤖 最最適化シフト生成エンジン")
 
 if not PULP_AVAILABLE:
-    st.error("📦 最適化ライブラリ `PuLP` がインストールされていません。ターミナルで `pip install pulp` を実行するか、requirements.txtに追記してください。")
+    st.error("📦 最適化ライブラリ `PuLP` がインストールされていません。")
 else:
     if st.button("🚀 この条件で最適なシフトを自動生成する (ソルバー起動)", use_container_width=True):
         if df_filtered.empty:
@@ -159,51 +165,35 @@ else:
             with st.spinner("数理最適化ソルバーが最善の組み合わせを計算中..."):
                 staff_list = list(staff_info_dict.keys())
                 
-                # パラメータマトリクス A[i, t]: スタッフ i が時間枠 t に出勤可能か (1 or 0)
                 A = {i: {t: 0 for t in slots_without_last} for i in staff_list}
                 for _, row in df_filtered.iterrows():
                     name = row["純粋な名前"]
                     for t in slots_without_last:
                         slot_dt = datetime.strptime(f"{selected_date_str} {t}", "%Y-%m-%d %H:%M")
-                        if row["start_time" if "start_time" in row else "開始時刻"] <= slot_dt < row["end_time" if "end_time" in row else "終了時刻"]:
+                        if row["開始時刻"] <= slot_dt < row["終了時刻"]:
                             if name in A: A[name][t] = 1
 
-                # 📦 最適化問題の定義（目的関数はペナルティの最小化）
                 prob = pulp.LpProblem("Shift_Optimization", pulp.LpMinimize)
-                
-                # 決定変数 x[i, t]: スタッフ i を時間枠 t にアサインするか (0-1変数)
                 x = pulp.LpVariable.dicts("assign", ((i, t) for i in staff_list for t in slots_without_last), cat='Binary')
-                
-                # スラック変数（ソフト制約用：下限不足分、上限過剰分）
                 slack_under = pulp.LpVariable.dicts("slack_under", slots_without_last, lowBound=0, cat='Continuous')
                 slack_over = pulp.LpVariable.dicts("slack_over", slots_without_last, lowBound=0, cat='Continuous')
 
-                # 🎯 目的関数の設定
-                # 1. 戦力不足(slack_under)には極めて重いペナルティ(1000)
-                # 2. コスト過剰(slack_over)には中程度のペナルティ(10)
-                # 3. 無駄なアサイン（過剰なコマ詰め）を防ぐため、出勤総枠数に微小なコスト(1)
                 prob += (
                     pulp.lpSum(slack_under[t] * 1000 + slack_over[t] * 10 for t in slots_without_last) +
                     pulp.lpSum(x[i, t] * 1 for i in staff_list for t in slots_without_last)
                 )
 
-                # 🔒 制約条件の設定
                 for t in slots_without_last:
-                    # 時間帯 t の総戦闘力
                     total_power = pulp.lpSum(staff_info_dict[i]["power"] * x[i, t] for i in staff_list)
-                    # 柔軟な上下限制約（スラック変数による軟化）
                     prob += total_power >= min_strength_target - slack_under[t]
                     prob += total_power <= max_strength_target + slack_over[t]
 
                 for i in staff_list:
                     for t in slots_without_last:
-                        # 希望（提出）していない時間帯には絶対にアサインできない
                         prob += x[i, t] <= A[i][t]
 
-                # 🚀 ソルバー実行 (Cbc内蔵ソルバー)
                 prob.solve(pulp.PULP_CBC_CMD(msg=False))
                 
-                # 📊 最適化結果のデコードと、連続する勤務枠のマージ（ガントチャート用）
                 opt_records = []
                 for i in staff_list:
                     in_shift = False
@@ -225,10 +215,8 @@ else:
                             "純粋な名前": i, "開始": f"{selected_date_str} {start_t}", "終了": f"{selected_date_str} 22:00"
                         })
                 
-                # 結果をSessionStateに退避させて保持
                 st.session_state["opt_df"] = pd.DataFrame(opt_records) if opt_records else pd.DataFrame()
                 
-                # 時系列の総戦闘力推移の集計
                 opt_sim_data = []
                 for t in slots_without_last:
                     t_power = sum(staff_info_dict[i]["power"] for i in staff_list if pulp.value(x[i, t]) == 1)
@@ -241,13 +229,12 @@ else:
                 st.success("🎉 数理最適化に基づいた『確定シフト』の自動生成が完了しました！")
 
 # ==========================================
-# 📈 4. 最適化結果のダッシュボード表示 (Before / After の比較)
+# 📈 4. 最適化結果のダッシュボード表示
 # ==========================================
 if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim") is not None:
     df_opt = st.session_state["opt_df"]
     df_opt_sim = st.session_state["opt_sim"]
     
-    # スコア計算
     t_slots = len(df_opt_sim)
     s_slots = sum(1 for _, r in df_opt_sim.iterrows() if r["下限目標"] <= r["現在の総戦闘力"] <= r["上限目標"])
     score = int((s_slots / t_slots) * 100) if t_slots > 0 else 0
@@ -261,12 +248,10 @@ if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim"
     with col_res2:
         st.metric(label="📅 目標戦闘力を満たしている時間帯", value=f"{s_slots} / {t_slots} コマ")
         
-    # グラフでBefore/Afterの推移
     st.markdown("### 📈 最適化後の総戦闘力タイムライン推移")
-    fig_opt_line = px.line(df_opt_sim, x="時間帯", y=["現在の総戦闘力", "下限目標", "上限目標"], title="最適化アサイン後の総戦闘力推移（綺麗にライン内に収まります）", line_shape="hv")
+    fig_opt_line = px.line(df_opt_sim, x="時間帯", y=["現在の総戦闘力", "下限目標", "上限目標"], title="最適化アサイン後の総戦闘力推移", line_shape="hv")
     st.plotly_chart(fig_opt_line, use_container_width=True)
     
-    # ガントチャート
     st.markdown("### 📅 確定自動生成シフト（ガントチャート）")
     if not df_opt.empty:
         fig_opt_gantt = px.timeline(df_opt, x_start="開始", x_end="終了", y="スタッフ", color="スタッフ", text="スタッフ", title="無駄を削ぎ落とした『確定アサイン結果』")
@@ -280,19 +265,20 @@ if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim"
 st.markdown("---")
 st.subheader("📋 （参考）スタッフから提出された生の希望シフト")
 if not df_filtered.empty:
-    fig_raw = px.timeline(df_filtered, x_start="開始時刻", x_end="終了時刻", y="スタッフ", color="スタッフ", text="スタッフ", title="提出された希望シフトの重ね合わせ（Before）")
+    # ✨ 修正ポイント：x_start と x_end に、datetimeオブジェクトの列ではなく、文字列の "開始" と "終了" を指定
+    fig_raw = px.timeline(df_filtered, x_start="開始", x_end="終了", y="スタッフ", color="スタッフ", text="スタッフ", title="提出された希望シフトの重ね合わせ（Before）")
     fig_raw.update_yaxes(autorange="reversed")
+    fig_raw.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"))
     st.plotly_chart(fig_raw, use_container_width=True)
 else:
     st.info("希望シフトデータがありません。")
 
 st.markdown("---")
-# (アカウント管理機能はそのまま維持)
 st.header("👥 スタッフアカウント管理")
 col_s1, col_s2 = st.columns(2)
 with col_s1:
     st.subheader("➕ スタッフの新規追加")
-    new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：高部 光佑", key="s_add_name")
+    new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：山田 太郎", key="s_add_name")
     new_staff_power = st.number_input("このスタッフの戦闘力（点数）を設定してください", min_value=1, value=3, step=1, key="s_add_power")
     if st.button("➕ このスタッフを追加する", use_container_width=True, key="s_add_btn"):
         if new_staff_name and new_staff_name not in current_staff_ids:
