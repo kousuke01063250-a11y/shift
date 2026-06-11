@@ -4,7 +4,7 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import requests
 
-# 最適化ライブラリのインポートチェック
+# 最最適化ライブラリのインポートチェック
 try:
     import pulp
     PULP_AVAILABLE = True
@@ -135,7 +135,7 @@ if response.status_code == 200:
 df_all = pd.DataFrame(parsed_records) if parsed_records else pd.DataFrame()
 
 # 📅 画面UI
-st.title("🤖 🚀 数理最適化シフト自動生成システム (ポジション管理紐付け版)")
+st.title("🤖 🚀 数理最適化シフト自動生成システム")
 selected_day_index = st.selectbox("シフトを自動生成する曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
 selected_date_str = target_dates[selected_day_index]
 
@@ -147,7 +147,7 @@ with col_tgt1:
 with col_tgt2:
     max_strength_target = st.number_input("📈 上限の総戦闘力 (人件費コスト抑制ライン)", min_value=0, value=8, step=1)
 
-# ✨ 新設：ポジションごとの最低必要人数の動的UI
+# ポジションごとの最低必要人数の動的UI
 st.markdown("### 🛠️ 2. ポジションごとの最低必要人数設定")
 position_requirements = {}
 if all_positions:
@@ -156,7 +156,7 @@ if all_positions:
         with cols[idx]:
             position_requirements[pos] = st.number_input(f"👥 {pos}の最低必要人数", min_value=0, value=1, step=1)
 else:
-    st.info("Notion側でスタッフに職種（マルチセレクト）がまだ設定されていません。")
+    st.info("※Notionのスタッフデータベースに職種（マルチセレクト）がまだ1件も登録されていません。最下部からスタッフを追加してください。")
 
 if not df_all.empty:
     df_filtered = df_all[df_all["日付"] == selected_date_str]
@@ -201,7 +201,7 @@ else:
                 slack_over = pulp.LpVariable.dicts("slack_over", slots_without_last, lowBound=0, cat='Continuous')
                 slack_pos = pulp.LpVariable.dicts("slack_pos", ((p, t) for p in all_positions for t in slots_without_last), lowBound=0, cat='Continuous')
 
-                # 目的関数（ポジション不足にも強いペナルティ）
+                # 目的関数（ポジション不足へのペナルティ）
                 prob += (
                     pulp.lpSum(slack_under[t] * 1000 + slack_over[t] * 10 for t in slots_without_last) +
                     pulp.lpSum(slack_pos[p, t] * 500 for p in all_positions for t in slots_without_last) +
@@ -234,7 +234,7 @@ else:
                 # ソルバー実行
                 prob.solve(pulp.PULP_CBC_CMD(msg=False))
                 
-                # 結果のデコード（連続する同一ポジション枠を1つにマージ）
+                # 結果のデコード
                 opt_records = []
                 for i in staff_list:
                     current_pos = None
@@ -303,8 +303,7 @@ if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim"
     
     st.markdown("### 📅 確定自動生成シフト（ポジション別色分けガントチャート）")
     if not df_opt.empty:
-        # ✨ 改善：縦軸を「スタッフ名」にし、バーの色を「担当ポジション」に設定！
-        fig_opt_gantt = px.timeline(df_opt, x_start="開始", x_end="終了", y="スタッフ", color="ポジション", text="ポジション", title="時間帯別の担当ポジション可視化")
+        fig_opt_gantt = px.timeline(df_opt, x_start="開始", x_end="終了", y="表示名", color="ポジション", text="ポジション", title="時間帯別の担当ポジション可視化")
         fig_opt_gantt.update_yaxes(autorange="reversed")
         fig_opt_gantt.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"))
         st.plotly_chart(fig_opt_gantt, use_container_width=True)
@@ -319,3 +318,58 @@ if not df_filtered.empty:
     fig_raw.update_yaxes(autorange="reversed")
     fig_raw.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"))
     st.plotly_chart(fig_raw, use_container_width=True)
+else:
+    st.info("希望シフトデータがありません。")
+
+# ==========================================
+# 👥 5. 【復活＆強化】スタッフアカウント管理
+# ==========================================
+st.markdown("---")
+st.header("👥 スタッフアカウント管理")
+col_s1, col_s2 = st.columns(2)
+
+with col_s1:
+    st.subheader("➕ スタッフの新規追加")
+    new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：山田 太郎", key="s_add_name")
+    new_staff_power = st.number_input("このスタッフの戦闘力（点数）を設定してください", min_value=1, value=3, step=1, key="s_add_power")
+    
+    # ✨ パワーアップ：既存のポジション、あるいはデフォルトの役割から複数選べるように拡張！
+    position_options = all_positions if all_positions else ["レジ", "キッチン", "ホール"]
+    new_staff_skills = st.multiselect("このスタッフが担当できるポジション（職種）をすべて選択してください", options=position_options, key="s_add_skills")
+    
+    if st.button("➕ このスタッフをNotionに登録する", use_container_width=True, key="s_add_btn"):
+        if not new_staff_name:
+            st.error("⚠️ スタッフの名前を入力してください。")
+        elif new_staff_name in current_staff_ids:
+            st.warning(f"⚠️ 「{new_staff_name}」さんは既に登録されています。")
+        else:
+            payload = {
+                "parent": {"database_id": STAFF_DB_ID},
+                "properties": {
+                    "名前": {"title": [{"text": {"content": new_staff_name}}]},
+                    "戦闘力": {"number": new_staff_power},
+                    "職種": {"multi_select": [{"name": p} for p in new_staff_skills]}
+                }
+            }
+            res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
+            if res.status_code == 200:
+                st.success(f"🎉 「{new_staff_name}」さん（職種: {', '.join(new_staff_skills)}）を新しく登録しました！")
+                st.rerun()
+            else:
+                st.error(f"Notionへの登録に失敗しました。APIエラー: {res.text}")
+
+with col_s2:
+    st.subheader("🗑️ スタッフの削除（アーカイブ）")
+    if current_staff_ids:
+        del_target = st.selectbox("削除するスタッフを選択してください", list(current_staff_ids.keys()))
+        st.warning(f"⚠️ 「{del_target}」さんを削除すると、次回からシフト最適化の計算対象外になります。")
+        if st.button("🗑️ このスタッフの登録を削除する", use_container_width=True, key="s_del_btn"):
+            page_id = current_staff_ids[del_target]
+            res = requests.patch(f"https://api.notion.com/v1/pages/{page_id}", headers=headers, json={"archived": True})
+            if res.status_code == 200:
+                st.success(f"🗑️ 「{del_target}」さんのデータを安全に削除（アーカイブ）しました。")
+                st.rerun()
+            else:
+                st.error(f"Notion側での削除処理に失敗しました。: {res.text}")
+    else:
+        st.info("登録されているスタッフがいません。")
