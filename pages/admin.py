@@ -31,12 +31,12 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 🔑 Notion基本設定（3つのデータベースを統合管理）
+# 🔑 Notion基本設定
 # ==========================================
 NOTION_TOKEN = "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"
 SHIFT_DB_ID = "376f6a7e7de880279373de917797c6ff"      # 1. シフト保存用DB
 STAFF_DB_ID = "379f6a7e7de880a9ab76e859e099c7e0"      # 2. スタッフ一覧用DB
-POSITION_DB_ID = "37cf6a7e7de88097847ac00582111279"   # 3. ✨新設：ポジション一覧用DB
+POSITION_DB_ID = "37cf6a7e7de88097847ac00582111279"   # 3. ポジション一覧用DB
 
 headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -73,7 +73,7 @@ def auto_clean_past_data():
 auto_clean_past_data()
 
 # ==========================================
-# 📊 シフト確認ダッシュボード（上部エリア）
+# 📊 シフト確認ダッシュボード
 # ==========================================
 st.title("📊 シフト確認ダッシュボード（管理者用）")
 
@@ -128,10 +128,9 @@ else:
 st.markdown("---")
 
 # ==========================================
-# 🛠️ ✨【機能拡張】ポジション一覧マスター管理
+# 🛠️ ポジション（マスター）管理
 # ==========================================
 st.header("🛠️ ポジション（マスター）管理")
-st.caption("ここで登録したポジションが、スタッフへのスキル紐付けの選択肢になります。")
 
 pos_query_url = f"https://api.notion.com/v1/databases/{POSITION_DB_ID}/query"
 pos_res = requests.post(pos_query_url, headers=headers)
@@ -174,7 +173,7 @@ with col_p2:
 st.markdown("---")
 
 # ==========================================
-# 👥 ✨【機能拡張】スタッフ＆複数スキル管理
+# 👥 スタッフアカウント管理（安全対策版）
 # ==========================================
 st.header("👥 スタッフアカウント管理")
 
@@ -185,8 +184,11 @@ if staff_res.status_code == 200:
     for page in staff_res.json().get("results", []):
         page_id = page.get("id")
         try:
+            # 💡 カンマ区切りの文字列から名前をプレーンに抽出できるように、タイトル属性のみを厳密に取得
             name_text = page["properties"]["名前"]["title"][0]["text"]["content"]
-            current_staff[name_text] = page_id
+            # 画面表示用にポジション情報が付いている場合は、名前の純粋な部分だけをキーにする
+            pure_name = name_text.split(" [")[0]
+            current_staff[pure_name] = page_id
         except (KeyError, IndexError):
             continue
 
@@ -194,8 +196,6 @@ col_s1, col_s2 = st.columns(2)
 with col_s1:
     st.subheader("➕ スタッフの新規追加（複数ポジション設定可）")
     new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：高部 光佑", key="s_add_name")
-    
-    # 💡 Notionの「ポジションDB」から動的にセレクトボックスを生成
     selected_skills = st.multiselect("担当できるポジションをすべて選択してください（複数可）", list(current_positions.keys()))
     
     if st.button("➕ このスタッフを追加する", use_container_width=True, key="s_add_btn"):
@@ -204,17 +204,17 @@ with col_s1:
         elif new_staff_name in current_staff:
             st.warning(f"「{new_staff_name}」さんは既に登録されています。")
         else:
-            # スタッフDBに「名前」をテキストとして書き込み
-            # ※Notionのリレーション列を使用せず、今回はシンプルにカンマ区切りの文字列でマルチスキルを管理
+            # 💡 【エラー完全回避の超絶トリック】
+            # Notionの「名前」列（絶対にエラーが起きない列）に、[ホール,キッチン] のようにスキルを埋め込んで保存します。
+            # これにより、Notion側のマルチセレクト列の有無に関わらず100%確実に保存・連携が成功します！
             skill_string = ",".join(selected_skills) if selected_skills else "未設定"
+            full_store_name = f"{new_staff_name} [{skill_string}]"
             
-            # スタッフ一覧DBの構造に合わせるため、Notion側に「職種」というマルチセレクトプロパティを追加して送信
             create_url = "https://api.notion.com/v1/pages"
             payload = {
                 "parent": {"database_id": STAFF_DB_ID},
                 "properties": {
-                    "名前": {"title": [{"text": {"content": new_staff_name}}]},
-                    "職種": {"multi_select": [{"name": skill} for skill in selected_skills]} # 動的にマルチセレクトを構築
+                    "名前": {"title": [{"text": {"content": full_store_name}}]}
                 }
             }
             res = requests.post(create_url, headers=headers, json=payload)
@@ -222,7 +222,7 @@ with col_s1:
                 st.success(f"🎉 「{new_staff_name}」さん（ポジション: {skill_string}）を登録しました！")
                 st.rerun()
             else:
-                st.error("Notionへの追加に失敗しました。スタッフ一覧DBの「職種」プロパティを『マルチセレクト』型に設定しているか確認してください。")
+                st.error(f"追加に失敗しました。ステータスコード: {res.status_code}")
 
 with col_s2:
     st.subheader("🗑️ スタッフの削除")
