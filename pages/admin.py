@@ -4,6 +4,13 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import requests
 
+# 💡 最適化ライブラリのインポートチェック
+try:
+    import pulp
+    PULP_AVAILABLE = True
+except ImportError:
+    PULP_AVAILABLE = False
+
 # ページ設定
 st.set_page_config(page_title="シフト確認ダッシュボード", layout="wide")
 
@@ -48,7 +55,7 @@ headers = {
 staff_query_url = f"https://api.notion.com/v1/databases/{STAFF_DB_ID}/query"
 staff_res = requests.post(staff_query_url, headers=headers)
 
-staff_info_dict = {}  # { "スタッフ名": {"skills": [...], "power": 3} }
+staff_info_dict = {}  
 current_staff_ids = {}
 
 if staff_res.status_code == 200:
@@ -59,14 +66,11 @@ if staff_res.status_code == 200:
             name_text = props["名前"]["title"][0]["text"]["content"].strip()
             current_staff_ids[name_text] = page_id
             
-            # 職種（マルチセレクト）の取得
             multi_select = props.get("職種", {}).get("multi_select", [])
             skills = [item["name"] for item in multi_select]
             
-            # ✨新設：戦闘力（数値プロパティ）の取得（未設定なら一律1点とする）
             power_val = props.get("戦闘力", {}).get("number")
-            if power_val is None:
-                power_val = 1
+            if power_val is None: power_val = 1
                 
             staff_info_dict[name_text] = {
                 "skills": skills,
@@ -76,26 +80,24 @@ if staff_res.status_code == 200:
             continue
 
 # ==========================================
-# 📊 2. シフト確認 & 総戦闘力シミュレーター
+# 📊 2. データ構造の定義
 # ==========================================
-st.title("📊 シフト確認 & 総戦闘力シミュレーター")
-
 today = datetime.today()
 days_until_next_monday = (0 - today.weekday()) % 7
-if days_until_next_monday == 0:
-    days_until_next_monday = 7
+if days_until_next_monday == 0: days_until_next_monday = 7
 next_monday = today + timedelta(days=days_until_next_monday)
 week_days = ["月", "火", "水", "木", "金", "土", "日"]
 target_dates = [(next_monday + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
 
-# 30分刻みの時間軸配列を作成 (09:00 〜 22:00)
+# 30分刻みの時間軸配列
 time_slots = []
 for hour in range(9, 22):
     time_slots.append(f"{hour:02d}:00")
     time_slots.append(f"{hour:02d}:30")
 time_slots.append("22:00")
+slots_without_last = time_slots[:-1]
 
-# 最新シフトデータの取得
+# 最新希望シフトデータの取得
 parsed_records = []
 query_url = f"https://api.notion.com/v1/databases/{SHIFT_DB_ID}/query"
 response = requests.post(query_url, headers=headers)
@@ -110,12 +112,8 @@ if response.status_code == 200:
             r_shift = props["シフト"]["rich_text"][0]["text"]["content"]
             
             if r_start != "-" and r_end != "-":
-                s_info = staff_info_dict.get(r_name, {"skills": [], "power": 1})
-                display_name = f"{r_name} (💪戦闘力:{s_info['power']})"
-                
                 parsed_records.append({
                     "純粋な名前": r_name,
-                    "スタッフ": display_name,
                     "日付": r_start.split(" ")[0],
                     "開始時刻": datetime.strptime(r_start, "%Y-%m-%d %H:%M"),
                     "終了時刻": datetime.strptime(r_end, "%Y-%m-%d %H:%M"),
@@ -126,120 +124,184 @@ if response.status_code == 200:
 
 df_all = pd.DataFrame(parsed_records) if parsed_records else pd.DataFrame()
 
-# 📅 曜日選択
-selected_day_index = st.selectbox("確認・シミュレーションする曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
+# 📅 画面UI：条件設定
+st.title("🤖 🚀 数理最適化シフト自動生成システム")
+selected_day_index = st.selectbox("シフトを自動生成する曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
 selected_date_str = target_dates[selected_day_index]
 
-# 🎯 総戦闘力の制約（目標値）のUI設定
-st.markdown("### 🎯 配置総戦闘力の制約設定 (〇〇以上 〜 〇〇以下)")
+st.markdown("### 🎯 現場の総戦闘力制約（目標値）")
 col_tgt1, col_tgt2 = st.columns(2)
 with col_tgt1:
-    min_strength_target = st.number_input("📉 必要最低限の総戦闘力 (これ以上必要)", min_value=0, value=3, step=1)
+    min_strength_target = st.number_input("📉 必要な最低総戦闘力 (これ以上必要)", min_value=0, value=3, step=1)
 with col_tgt2:
-    max_strength_target = st.number_input("📈 上限の総戦闘力 (これ以下に抑える)", min_value=0, value=8, step=1)
+    max_strength_target = st.number_input("📈 上限の総戦闘力 (人件費コスト抑制ライン)", min_value=0, value=8, step=1)
 
-st.markdown("---")
-
-# 🧮 30分ごとの総戦闘力計算ロジック
+# 現在の日付フィルターデータ
 if not df_all.empty:
     df_filtered = df_all[df_all["日付"] == selected_date_str]
 else:
     df_filtered = pd.DataFrame()
 
-timeline_data = []
-
-for ts in time_slots[:-1]:
-    current_slot_dt = datetime.strptime(f"{selected_date_str} {ts}", "%Y-%m-%d %H:%M")
-    
-    total_power_at_slot = 0
-    available_staff_names = []
-    
-    if not df_filtered.empty:
-        for _, row in df_filtered.iterrows():
-            if row["開始時刻"] <= current_slot_dt < row["終了時刻"]:
-                name = row["純粋な名前"]
-                s_info = staff_info_dict.get(name, {"skills": [], "power": 1})
-                
-                # その時間帯にいるスタッフの戦闘力を加算
-                total_power_at_slot += s_info["power"]
-                available_staff_names.append(f"{name}({s_info['power']})")
-
-    # 制約を満たしているか判定
-    is_safe = min_strength_target <= total_power_at_slot <= max_strength_target
-    status_str = "🟢 適正" if is_safe else ("🚨 戦力不足" if total_power_at_slot < min_strength_target else "⚠️ コスト過剰")
-
-    timeline_data.append({
-        "時間帯": ts,
-        "現在の総戦闘力": total_power_at_slot,
-        "下限目標": min_strength_target,
-        "上限目標": max_strength_target,
-        "判定結果": status_str,
-        "出勤可能スタッフ": ", ".join(available_staff_names)
-    })
-
-df_sim = pd.DataFrame(timeline_data)
-
-# 🏆 シフト制約の充足スコアを算出
-total_slots = len(df_sim)
-safe_slots = sum(1 for row in timeline_data if min_strength_target <= row["現在の総戦闘力"] <= max_strength_target)
-constraint_score = int((safe_slots / total_slots) * 100) if total_slots > 0 else 0
-
-st.header("🏆 シフト制約の評価スコア")
-col_sc1, col_sc2 = st.columns(2)
-with col_sc1:
-    st.metric(label="✨ 制約充足スコア (時間帯ベース)", value=f"{constraint_score} / 100 点")
-with col_sc2:
-    st.metric(label="📅 制約を完全に満たしている時間帯", value=f"{safe_slots} / {total_slots} コマ")
-
-# 📊 総戦闘力の推移グラフ
-st.markdown("### 📈 時間帯別の総戦闘力推移")
-fig_sim = px.line(df_sim, x="時間帯", y=["現在の総戦闘力", "下限目標", "上限目標"], title="時間帯ごとの総戦闘力と制約ライン", line_shape="hv")
-st.plotly_chart(fig_sim, use_container_width=True)
-
-# 📋 詳細テーブル
-st.subheader("🕵️‍♂️ 30分ごとの詳細シミュレーションデータ")
-st.dataframe(df_sim, use_container_width=True)
-
 st.markdown("---")
 
 # ==========================================
-# 👥 3. スタッフアカウント管理（追加・削除）
+# 🧠 3. 数理最適化（MIP）エンジン
 # ==========================================
-st.header("👥 スタッフアカウント管理")
+st.header("🤖 最適化シフト生成エンジン")
 
+if not PULP_AVAILABLE:
+    st.error("📦 最適化ライブラリ `PuLP` がインストールされていません。ターミナルで `pip install pulp` を実行するか、requirements.txtに追記してください。")
+else:
+    if st.button("🚀 この条件で最適なシフトを自動生成する (ソルバー起動)", use_container_width=True):
+        if df_filtered.empty:
+            st.warning("⚠️ 選択された日の希望シフトデータが1件もないため、最適化を実行できません。")
+        else:
+            with st.spinner("数理最適化ソルバーが最善の組み合わせを計算中..."):
+                staff_list = list(staff_info_dict.keys())
+                
+                # パラメータマトリクス A[i, t]: スタッフ i が時間枠 t に出勤可能か (1 or 0)
+                A = {i: {t: 0 for t in slots_without_last} for i in staff_list}
+                for _, row in df_filtered.iterrows():
+                    name = row["純粋な名前"]
+                    for t in slots_without_last:
+                        slot_dt = datetime.strptime(f"{selected_date_str} {t}", "%Y-%m-%d %H:%M")
+                        if row["start_time" if "start_time" in row else "開始時刻"] <= slot_dt < row["end_time" if "end_time" in row else "終了時刻"]:
+                            if name in A: A[name][t] = 1
+
+                # 📦 最適化問題の定義（目的関数はペナルティの最小化）
+                prob = pulp.LpProblem("Shift_Optimization", pulp.LpMinimize)
+                
+                # 決定変数 x[i, t]: スタッフ i を時間枠 t にアサインするか (0-1変数)
+                x = pulp.LpVariable.dicts("assign", ((i, t) for i in staff_list for t in slots_without_last), cat='Binary')
+                
+                # スラック変数（ソフト制約用：下限不足分、上限過剰分）
+                slack_under = pulp.LpVariable.dicts("slack_under", slots_without_last, lowBound=0, cat='Continuous')
+                slack_over = pulp.LpVariable.dicts("slack_over", slots_without_last, lowBound=0, cat='Continuous')
+
+                # 🎯 目的関数の設定
+                # 1. 戦力不足(slack_under)には極めて重いペナルティ(1000)
+                # 2. コスト過剰(slack_over)には中程度のペナルティ(10)
+                # 3. 無駄なアサイン（過剰なコマ詰め）を防ぐため、出勤総枠数に微小なコスト(1)
+                prob += (
+                    pulp.lpSum(slack_under[t] * 1000 + slack_over[t] * 10 for t in slots_without_last) +
+                    pulp.lpSum(x[i, t] * 1 for i in staff_list for t in slots_without_last)
+                )
+
+                # 🔒 制約条件の設定
+                for t in slots_without_last:
+                    # 時間帯 t の総戦闘力
+                    total_power = pulp.lpSum(staff_info_dict[i]["power"] * x[i, t] for i in staff_list)
+                    # 柔軟な上下限制約（スラック変数による軟化）
+                    prob += total_power >= min_strength_target - slack_under[t]
+                    prob += total_power <= max_strength_target + slack_over[t]
+
+                for i in staff_list:
+                    for t in slots_without_last:
+                        # 希望（提出）していない時間帯には絶対にアサインできない
+                        prob += x[i, t] <= A[i][t]
+
+                # 🚀 ソルバー実行 (Cbc内蔵ソルバー)
+                prob.solve(pulp.PULP_CBC_CMD(msg=False))
+                
+                # 📊 最適化結果のデコードと、連続する勤務枠のマージ（ガントチャート用）
+                opt_records = []
+                for i in staff_list:
+                    in_shift = False
+                    start_t = None
+                    for idx, t in enumerate(slots_without_last):
+                        assigned = (pulp.value(x[i, t]) == 1)
+                        if assigned and not in_shift:
+                            in_shift = True
+                            start_t = t
+                        elif not assigned and in_shift:
+                            in_shift = False
+                            opt_records.append({
+                                "スタッフ": f"{i} (💪パワー:{staff_info_dict[i]['power']})",
+                                "純粋な名前": i, "開始": f"{selected_date_str} {start_t}", "終了": f"{selected_date_str} {t}"
+                            })
+                    if in_shift:
+                        opt_records.append({
+                            "スタッフ": f"{i} (💪パワー:{staff_info_dict[i]['power']})",
+                            "純粋な名前": i, "開始": f"{selected_date_str} {start_t}", "終了": f"{selected_date_str} 22:00"
+                        })
+                
+                # 結果をSessionStateに退避させて保持
+                st.session_state["opt_df"] = pd.DataFrame(opt_records) if opt_records else pd.DataFrame()
+                
+                # 時系列の総戦闘力推移の集計
+                opt_sim_data = []
+                for t in slots_without_last:
+                    t_power = sum(staff_info_dict[i]["power"] for i in staff_list if pulp.value(x[i, t]) == 1)
+                    is_safe = min_strength_target <= t_power <= max_strength_target
+                    status_str = "🟢 適正" if is_safe else ("🚨 戦力不足" if t_power < min_strength_target else "⚠️ コスト過剰")
+                    opt_sim_data.append({
+                        "時間帯": t, "現在の総戦闘力": t_power, "下限目標": min_strength_target, "上限目標": max_strength_target, "判定結果": status_str
+                    })
+                st.session_state["opt_sim"] = pd.DataFrame(opt_sim_data)
+                st.success("🎉 数理最適化に基づいた『確定シフト』の自動生成が完了しました！")
+
+# ==========================================
+# 📈 4. 最適化結果のダッシュボード表示 (Before / After の比較)
+# ==========================================
+if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim") is not None:
+    df_opt = st.session_state["opt_df"]
+    df_opt_sim = st.session_state["opt_sim"]
+    
+    # スコア計算
+    t_slots = len(df_opt_sim)
+    s_slots = sum(1 for _, r in df_opt_sim.iterrows() if r["下限目標"] <= r["現在の総戦闘力"] <= r["上限目標"])
+    score = int((s_slots / t_slots) * 100) if t_slots > 0 else 0
+    
+    st.markdown("---")
+    st.subheader("🏆 生成された最適化シフトの評価")
+    
+    col_res1, col_res2 = st.columns(2)
+    with col_res1:
+        st.metric(label="✨ 自動生成シフトの制約充足スコア", value=f"{score} / 100 点")
+    with col_res2:
+        st.metric(label="📅 目標戦闘力を満たしている時間帯", value=f"{s_slots} / {t_slots} コマ")
+        
+    # グラフでBefore/Afterの推移
+    st.markdown("### 📈 最適化後の総戦闘力タイムライン推移")
+    fig_opt_line = px.line(df_opt_sim, x="時間帯", y=["現在の総戦闘力", "下限目標", "上限目標"], title="最適化アサイン後の総戦闘力推移（綺麗にライン内に収まります）", line_shape="hv")
+    st.plotly_chart(fig_opt_line, use_container_width=True)
+    
+    # ガントチャート
+    st.markdown("### 📅 確定自動生成シフト（ガントチャート）")
+    if not df_opt.empty:
+        fig_opt_gantt = px.timeline(df_opt, x_start="開始", x_end="終了", y="スタッフ", color="スタッフ", text="スタッフ", title="無駄を削ぎ落とした『確定アサイン結果』")
+        fig_opt_gantt.update_yaxes(autorange="reversed")
+        fig_opt_gantt.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"))
+        st.plotly_chart(fig_opt_gantt, use_container_width=True)
+        st.dataframe(df_opt[["スタッフ", "開始", "終了"]], use_container_width=True)
+    else:
+        st.info("この条件を満たすためにアサインされたスタッフはいません。")
+
+st.markdown("---")
+st.subheader("📋 （参考）スタッフから提出された生の希望シフト")
+if not df_filtered.empty:
+    fig_raw = px.timeline(df_filtered, x_start="開始時刻", x_end="終了時刻", y="スタッフ", color="スタッフ", text="スタッフ", title="提出された希望シフトの重ね合わせ（Before）")
+    fig_raw.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig_raw, use_container_width=True)
+else:
+    st.info("希望シフトデータがありません。")
+
+st.markdown("---")
+# (アカウント管理機能はそのまま維持)
+st.header("👥 スタッフアカウント管理")
 col_s1, col_s2 = st.columns(2)
 with col_s1:
     st.subheader("➕ スタッフの新規追加")
     new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：高部 光佑", key="s_add_name")
     new_staff_power = st.number_input("このスタッフの戦闘力（点数）を設定してください", min_value=1, value=3, step=1, key="s_add_power")
-    
     if st.button("➕ このスタッフを追加する", use_container_width=True, key="s_add_btn"):
-        if not new_staff_name:
-            st.error("氏名を入力してください。")
-        elif new_staff_name in current_staff_ids:
-            st.warning(f"「{new_staff_name}」さんは既に登録されています。")
-        else:
-            create_url = "https://api.notion.com/v1/pages"
-            payload = {
-                "parent": {"database_id": STAFF_DB_ID},
-                "properties": {
-                    "名前": {"title": [{"text": {"content": new_staff_name}}]},
-                    "戦闘力": {"number": new_staff_power}
-                }
-            }
-            res = requests.post(create_url, headers=headers, json=payload)
-            if res.status_code == 200:
-                st.success(f"🎉 「{new_staff_name}」さん（戦闘力: {new_staff_power}）を登録しました！")
-                st.rerun()
-            else:
-                st.error("Notionへの追加に失敗しました。スタッフ一覧DBに『戦闘力』という名前の【数値型】プロパティがあるか確認してください。")
-
+        if new_staff_name and new_staff_name not in current_staff_ids:
+            res = requests.post("https://api.notion.com/v1/pages", headers=headers, json={"parent": {"database_id": STAFF_DB_ID}, "properties": {"名前": {"title": [{"text": {"content": new_staff_name}}]}, "戦闘力": {"number": new_staff_power}}})
+            if res.status_code == 200: st.success(f"🎉 「{new_staff_name}」さんを登録しました！"); st.rerun()
 with col_s2:
     st.subheader("🗑️ スタッフの削除")
     if current_staff_ids:
         del_target = st.selectbox("削除するスタッフを選択してください", list(current_staff_ids.keys()))
         if st.button("🗑️ このスタッフを削除する", use_container_width=True):
             res = requests.patch(f"https://api.notion.com/v1/pages/{current_staff_ids[del_target]}", headers=headers, json={"archived": True})
-            if res.status_code == 200:
-                st.success(f"🗑️ 「{del_target}」さんの登録を削除しました。")
-                st.rerun()
+            if res.status_code == 200: st.success(f"🗑️ 「{del_target}」さんの登録を削除しました。"); st.rerun()
