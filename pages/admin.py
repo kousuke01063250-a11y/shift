@@ -44,6 +44,29 @@ headers = {
     "Notion-Version": "2022-06-28"
 }
 
+# ==========================================
+# 🔌 ✨【新設】Notion接続ステータス確認システム
+# ==========================================
+st.sidebar.title("🔌 接続ステータス")
+
+def check_db_connection(db_id, db_name):
+    url = f"https://api.notion.com/v1/databases/{db_id}"
+    res = requests.get(url, headers=headers)
+    if res.status_code == 200:
+        st.sidebar.success(f"🟢 {db_name}: 接続正常")
+        return True
+    else:
+        st.sidebar.error(f"🔴 {db_name}: 接続エラー ({res.status_code})")
+        return False
+
+shift_ok = check_db_connection(SHIFT_DB_ID, "シフトDB")
+staff_ok = check_db_connection(STAFF_DB_ID, "スタッフDB")
+pos_ok = check_db_connection(POSITION_DB_ID, "ポジションDB")
+
+if not pos_ok:
+    st.sidebar.warning("⚠️ ポジションDBの右上の『•••』からコネクト（接続）が追加されているかご確認ください。")
+
+
 # ------------------------------------------
 # 🧹 【自動クレンジング機能】3週間前のデータを自動アーカイブ
 # ------------------------------------------
@@ -71,6 +94,7 @@ def auto_clean_past_data():
             st.toast(f"🧹 古いデータ {cleaned_count} 件を自動アーカイブしました。")
 
 auto_clean_past_data()
+
 
 # ==========================================
 # 📊 シフト確認ダッシュボード
@@ -135,29 +159,47 @@ st.header("🛠️ ポジション（マスター）管理")
 pos_query_url = f"https://api.notion.com/v1/databases/{POSITION_DB_ID}/query"
 pos_res = requests.post(pos_query_url, headers=headers)
 current_positions = {}
+
 if pos_res.status_code == 200:
     for page in pos_res.json().get("results", []):
         page_id = page.get("id")
         try:
-            pos_text = page["properties"]["ポジション名"]["title"][0]["text"]["content"]
-            current_positions[pos_text] = page_id
+            # 💡 安全対策：空のページや名前未入力のページはスキップする
+            title_obj = page["properties"]["ポジション名"]["title"]
+            if title_obj:
+                pos_text = title_obj[0]["text"]["content"].strip()
+                if pos_text: # 文字が空でない場合のみ追加
+                    current_positions[pos_text] = page_id
         except (KeyError, IndexError):
             continue
 
+# 現在登録されているポジションを横並びのバッジで視覚化
+if current_positions:
+    st.markdown("**現在登録されているポジション一覧:**")
+    cols = st.columns(len(current_positions) if len(current_positions) < 10 else 10)
+    for idx, pos_name in enumerate(current_positions.keys()):
+        cols[idx % len(cols)].info(f"● {pos_name}")
+else:
+    st.warning("⚠️ 現在、有効なポジションが登録されていません。下のフォームから追加してください。")
+
 col_p1, col_p2 = st.columns(2)
 with col_p1:
-    new_pos_name = st.text_input("🎨 新しいポジション名を入力", placeholder="例：焼き場、レジ、ホール")
+    new_pos_name = st.text_input("🎨 新しいポジション名を入力", placeholder="例：ホール、焼き場、仕込み")
     if st.button("➕ ポジションを新規追加する", use_container_width=True):
-        if new_pos_name and new_pos_name not in current_positions:
-            res = requests.post("https://api.notion.com/v1/pages", headers=headers, json={
-                "parent": {"database_id": POSITION_DB_ID},
-                "properties": {"ポジション名": {"title": [{"text": {"content": new_pos_name}}]}}
-            })
-            if res.status_code == 200:
-                st.success(f"🎉 ポジション「{new_pos_name}」を追加しました！")
-                st.rerun()
-        elif new_pos_name in current_positions:
-            st.warning("そのポジションは既に存在します。")
+        if new_pos_name:
+            new_pos_name = new_pos_name.strip()
+            if new_pos_name in current_positions:
+                st.warning("そのポジションは既に存在します。")
+            else:
+                res = requests.post("https://api.notion.com/v1/pages", headers=headers, json={
+                    "parent": {"database_id": POSITION_DB_ID},
+                    "properties": {"ポジション名": {"title": [{"text": {"content": new_pos_name}}]}}
+                })
+                if res.status_code == 200:
+                    st.success(f"🎉 ポジション「{new_pos_name}」を追加しました！")
+                    st.rerun()
+        else:
+            st.error("ポジション名を入力してください。")
 
 with col_p2:
     if current_positions:
@@ -167,13 +209,11 @@ with col_p2:
             if res.status_code == 200:
                 st.success(f"🗑️ 「{del_pos_target}」を削除しました。")
                 st.rerun()
-    else:
-        st.info("登録されているポジションがありません。")
 
 st.markdown("---")
 
 # ==========================================
-# 👥 スタッフアカウント管理（美しく2列に分離版）
+# 👥 スタッフアカウント管理
 # ==========================================
 st.header("👥 スタッフアカウント管理")
 
@@ -184,7 +224,6 @@ if staff_res.status_code == 200:
     for page in staff_res.json().get("results", []):
         page_id = page.get("id")
         try:
-            # 💡 名前の列からそのまま純粋な名前を取得
             name_text = page["properties"]["名前"]["title"][0]["text"]["content"]
             current_staff[name_text] = page_id
         except (KeyError, IndexError):
@@ -192,9 +231,12 @@ if staff_res.status_code == 200:
 
 col_s1, col_s2 = st.columns(2)
 with col_s1:
-    st.subheader("➕ スタッフの新規追加（複数ポジション設定可）")
+    st.subheader("➕ スタッフの新規追加")
     new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：高部 光佑", key="s_add_name")
-    selected_skills = st.multiselect("担当できるポジションをすべて選択してください（複数可）", list(current_positions.keys()))
+    
+    # 💡 上で動的に取得した current_positions のキーを100%確実にリストとして展開
+    position_options = list(current_positions.keys())
+    selected_skills = st.multiselect("担当できるポジションをすべて選択してください（複数可）", options=position_options)
     
     if st.button("➕ このスタッフを追加する", use_container_width=True, key="s_add_btn"):
         if not new_staff_name:
@@ -202,7 +244,6 @@ with col_s1:
         elif new_staff_name in current_staff:
             st.warning(f"「{new_staff_name}」さんは既に登録されています。")
         else:
-            # 💡 【本来の美しい設計】名前は名前の列、職種はマルチセレクトの列へそれぞれ個別に保存！
             create_url = "https://api.notion.com/v1/pages"
             payload = {
                 "parent": {"database_id": STAFF_DB_ID},
@@ -216,7 +257,7 @@ with col_s1:
                 st.success(f"🎉 「{new_staff_name}」さんを登録しました！")
                 st.rerun()
             else:
-                st.error(f"追加に失敗しました。Notion側の『職種』列が【マルチセレクト型】になっているか再度ご確認ください。(エラーコード: {res.status_code})")
+                st.error(f"追加に失敗しました。(エラーコード: {res.status_code})")
 
 with col_s2:
     st.subheader("🗑️ スタッフの削除")
