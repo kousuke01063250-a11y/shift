@@ -3,8 +3,9 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 import requests
+import hashlib  # 🔒 パスワードハッシュ化用
 
-# 最最適化ライブラリのインポートチェック
+# 最適化ライブラリのインポートチェック
 try:
     import pulp
     PULP_AVAILABLE = True
@@ -15,7 +16,7 @@ except ImportError:
 st.set_page_config(page_title="シフト確認ダッシュボード", layout="wide")
 
 # ==========================================
-# 🔒 確実なパスワード認証機能
+# 🔒 確実なパスワード認証機能 (ハッシュ化版)
 # ==========================================
 if "password_correct" not in st.session_state:
     st.session_state["password_correct"] = False
@@ -26,7 +27,12 @@ def check_password():
     st.title("🔒 管理者認証")
     input_password = st.text_input("パスワードを入力してください", type="password")
     if input_password:
-        if input_password == "admin123":
+        # 入力されたパスワードをSHA-256でハッシュ化
+        hashed_input = hashlib.sha256(input_password.encode()).hexdigest()
+        # 「admin123」のハッシュ値
+        target_hash = "240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9"
+        
+        if hashed_input == target_hash:
             st.session_state["password_correct"] = True
             st.rerun() 
         else:
@@ -57,7 +63,7 @@ staff_res = requests.post(staff_query_url, headers=headers)
 
 staff_info_dict = {}  
 current_staff_ids = {}
-all_positions_set = set() # 存在する全ポジションを自動抽出
+all_positions_set = set() 
 
 if staff_res.status_code == 200:
     for page in staff_res.json().get("results", []):
@@ -135,20 +141,28 @@ if response.status_code == 200:
 df_all = pd.DataFrame(parsed_records) if parsed_records else pd.DataFrame()
 
 # 📅 画面UI
-st.title("🤖 🚀 数理最適化シフト自動生成システム")
+st.title("🤖 🚀 数理最適化シフト自動生成システム (公平性分配モデル)")
 selected_day_index = st.selectbox("シフトを自動生成する曜日を選択してください", range(7), format_func=lambda x: f"{target_dates[x]} ({week_days[x]}曜日)")
 selected_date_str = target_dates[selected_day_index]
 
 # 🎯 条件設定
-st.markdown("### 🎯 1. 現場の総戦闘力制約（目標値）")
+st.markdown("### 🎯 1. 現場の総戦闘力・人件費の調整")
 col_tgt1, col_tgt2 = st.columns(2)
 with col_tgt1:
     min_strength_target = st.number_input("📉 必要な最低総戦闘力", min_value=0, value=3, step=1)
 with col_tgt2:
-    max_strength_target = st.number_input("📈 上限の総戦闘力 (人件費コスト抑制ライン)", min_value=0, value=8, step=1)
+    max_strength_target = st.number_input("📈 上限の総戦闘力", min_value=0, value=8, step=1)
+
+# ✨ 新設：アプローチA「希望シフトの目標採用率（公平性）」の設定UI
+st.markdown("### ⚖️ 2. スタッフ間の公平性設定（ベテラン偏重の防止）")
+target_fill_rate = st.slider(
+    "📊 希望シフトに対する目標採用率 (%)", 
+    min_value=10, max_value=100, value=70, step=5,
+    help="提出された希望コマ数に対して、全員が一律で何%くらいシフトに入れるようにするかを調整します。低すぎると人手不足になり、高すぎると人件費が過剰になります。"
+) / 100.0
 
 # ポジションごとの最低必要人数の動的UI
-st.markdown("### 🛠️ 2. ポジションごとの最低必要人数設定")
+st.markdown("### 🛠️ 3. ポジションごとの最低必要人数設定")
 position_requirements = {}
 if all_positions:
     cols = st.columns(len(all_positions))
@@ -156,7 +170,7 @@ if all_positions:
         with cols[idx]:
             position_requirements[pos] = st.number_input(f"👥 {pos}の最低必要人数", min_value=0, value=1, step=1)
 else:
-    st.info("※Notionのスタッフデータベースに職種（マルチセレクト）がまだ1件も登録されていません。最下部からスタッフを追加してください。")
+    st.info("※Notionのスタッフデータベースに職種が登録されていません。最下部から追加してください。")
 
 if not df_all.empty:
     df_filtered = df_all[df_all["日付"] == selected_date_str]
@@ -177,34 +191,45 @@ else:
         if df_filtered.empty:
             st.warning("⚠️ 選択された日の希望シフトデータがありません。")
         else:
-            with st.spinner("数理最適化ソルバーがポジション重複を排除して計算中..."):
+            with st.spinner("数理最適化ソルバーが公平性を計算しつつ、シフトを自動生成中..."):
                 staff_list = list(staff_info_dict.keys())
                 
-                # 出勤可能マトリクス
+                # 出勤可能マトリクス と 各自の希望総コマ数(WishCount)の計算
                 A = {i: {t: 0 for t in slots_without_last} for i in staff_list}
+                wish_counts = {i: 0 for i in staff_list}
+                
                 for _, row in df_filtered.iterrows():
                     name = row["純粋な名前"]
                     for t in slots_without_last:
                         slot_dt = datetime.strptime(f"{selected_date_str} {t}", "%Y-%m-%d %H:%M")
                         if row["開始時刻"] <= slot_dt < row["終了時刻"]:
-                            if name in A: A[name][t] = 1
+                            if name in A: 
+                                A[name][t] = 1
+
+                for i in staff_list:
+                    wish_counts[i] = sum(A[i][t] for t in slots_without_last)
 
                 # 問題定義
-                prob = pulp.LpProblem("Shift_Position_Optimization", pulp.LpMinimize)
+                prob = pulp.LpProblem("Shift_Fair_Position_Optimization", pulp.LpMinimize)
                 
                 # 決定変数
                 x = pulp.LpVariable.dicts("assign", ((i, t) for i in staff_list for t in slots_without_last), cat='Binary')
                 y = pulp.LpVariable.dicts("pos_assign", ((i, p, t) for i in staff_list for p in all_positions for t in slots_without_last), cat='Binary')
                 
-                # スラック変数
+                # スラック変数（制約緩和用）
                 slack_under = pulp.LpVariable.dicts("slack_under", slots_without_last, lowBound=0, cat='Continuous')
                 slack_over = pulp.LpVariable.dicts("slack_over", slots_without_last, lowBound=0, cat='Continuous')
                 slack_pos = pulp.LpVariable.dicts("slack_pos", ((p, t) for p in all_positions for t in slots_without_last), lowBound=0, cat='Continuous')
+                
+                # ✨ 公平性用のスラック変数（目標充填率からのズレ）
+                slack_fair_under = pulp.LpVariable.dicts("fair_under", staff_list, lowBound=0, cat='Continuous')
+                slack_fair_over = pulp.LpVariable.dicts("fair_over", staff_list, lowBound=0, cat='Continuous')
 
-                # 目的関数（ポジション不足へのペナルティ）
+                # 目的関数（最優先：現場の人数・戦闘力、次点：全員の公平性、最下位：総出勤数の抑制）
                 prob += (
-                    pulp.lpSum(slack_under[t] * 1000 + slack_over[t] * 10 for t in slots_without_last) +
-                    pulp.lpSum(slack_pos[p, t] * 500 for p in all_positions for t in slots_without_last) +
+                    pulp.lpSum(slack_under[t] * 2000 + slack_over[t] * 20 for t in slots_without_last) +
+                    pulp.lpSum(slack_pos[p, t] * 1000 for p in all_positions for t in slots_without_last) +
+                    pulp.lpSum((slack_fair_under[i] + slack_fair_over[i]) * 300 for i in staff_list if wish_counts[i] > 0) + # ✨ 公平性ペナルティ
                     pulp.lpSum(x[i, t] * 1 for i in staff_list for t in slots_without_last)
                 )
 
@@ -223,7 +248,7 @@ else:
                         # 3. 希望枠以外の出勤禁止
                         prob += x[i, t] <= A[i][t]
                         
-                        # 4. 1人1ポジションの掛け持ち禁止（出勤フラグとの完全連動）
+                        # 4. 1人1ポジションの掛け持ち禁止
                         prob += pulp.lpSum(y[i, p, t] for p in all_positions) == x[i, t]
                         
                         # 5. スキルを保有していないポジションへの配置禁止
@@ -231,15 +256,27 @@ else:
                             if p not in staff_info_dict[i]["skills"]:
                                 prob += y[i, p, t] == 0
 
+                # ✨ 6. 公平性均衡制約の追加
+                for i in staff_list:
+                    if wish_counts[i] > 0:
+                        actual_assigned_slots = pulp.lpSum(x[i, t] for t in slots_without_last)
+                        target_assigned_slots = wish_counts[i] * target_fill_rate
+                        prob += actual_assigned_slots == target_assigned_slots - slack_fair_under[i] + slack_fair_over[i]
+
                 # ソルバー実行
                 prob.solve(pulp.PULP_CBC_CMD(msg=False))
                 
                 # 結果のデコード
                 opt_records = []
+                staff_actual_counts = {i: 0 for i in staff_list}
+                
                 for i in staff_list:
                     current_pos = None
                     start_t = None
                     for idx, t in enumerate(slots_without_last):
+                        if pulp.value(x[i, t]) == 1:
+                            staff_actual_counts[i] += 1
+                            
                         assigned_pos = None
                         for p in all_positions:
                             if pulp.value(y[i, p, t]) == 1:
@@ -265,7 +302,18 @@ else:
                 
                 st.session_state["opt_df"] = pd.DataFrame(opt_records) if opt_records else pd.DataFrame()
                 
-                # タイムラインシミュレーションデータの生成
+                # スタッフごとの採用結果まとめ（公平性の検証用）
+                summary_data = []
+                for i in staff_list:
+                    if wish_counts[i] > 0:
+                        rate = int((staff_actual_counts[i] / wish_counts[i]) * 100)
+                        summary_data.append({
+                            "スタッフ名": i, "戦闘力": staff_info_dict[i]["power"],
+                            "希望コマ数": wish_counts[i], "採用コマ数": staff_actual_counts[i], "実際の採用率": f"{rate}%"
+                        })
+                st.session_state["opt_staff_summary"] = pd.DataFrame(summary_data)
+                
+                # タイムラインデータの生成
                 opt_sim_data = []
                 for t in slots_without_last:
                     t_power = sum(staff_info_dict[i]["power"] for i in staff_list if pulp.value(x[i, t]) == 1)
@@ -275,7 +323,7 @@ else:
                         "時間帯": t, "現在の総戦闘力": t_power, "下限目標": min_strength_target, "上限目標": max_strength_target, "判定結果": status_str
                     })
                 st.session_state["opt_sim"] = pd.DataFrame(opt_sim_data)
-                st.success("🎉 ポジション掛け持ちを完全に排除した最適化シフトの生成が完了しました！")
+                st.success("🎉 ベテラン偏重を回避し、公平に分配した最適化シフトの生成が完了しました！")
 
 # ==========================================
 # 📈 4. 最適化結果のダッシュボード表示
@@ -284,18 +332,13 @@ if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim"
     df_opt = st.session_state["opt_df"]
     df_opt_sim = st.session_state["opt_sim"]
     
-    t_slots = len(df_opt_sim)
-    s_slots = sum(1 for _, r in df_opt_sim.iterrows() if r["下限目標"] <= r["現在の総戦闘力"] <= r["上限目標"])
-    score = int((s_slots / t_slots) * 100) if t_slots > 0 else 0
-    
     st.markdown("---")
     st.subheader("🏆 生成された最適化シフトの評価")
     
-    col_res1, col_res2 = st.columns(2)
-    with col_res1:
-        st.metric(label="✨ 自動生成シフトの制約充足スコア", value=f"{score} / 100 点")
-    with col_res2:
-        st.metric(label="📅 目標戦闘力を満たしている時間帯", value=f"{s_slots} / {t_slots} コマ")
+    # ✨ 新設：各自に公平に割り振られているか一目でわかる検証テーブル
+    st.markdown("#### ⚖️ スタッフ別・希望シフト採用率の平準化ステータス")
+    if st.session_state.get("opt_staff_summary") is not None:
+        st.dataframe(st.session_state["opt_staff_summary"], use_container_width=True)
         
     st.markdown("### 📈 最適化後の総戦闘力タイムライン推移")
     fig_opt_line = px.line(df_opt_sim, x="時間帯", y=["現在の総戦闘力", "下限目標", "上限目標"], title="最適化アサイン後の総戦闘力推移", line_shape="hv")
@@ -307,7 +350,6 @@ if st.session_state.get("opt_df") is not None and st.session_state.get("opt_sim"
         fig_opt_gantt.update_yaxes(autorange="reversed")
         fig_opt_gantt.update_layout(xaxis=dict(title="時間帯", tickformat="%H:%M"))
         st.plotly_chart(fig_opt_gantt, use_container_width=True)
-        st.dataframe(df_opt[["スタッフ", "ポジション", "開始", "終了"]], use_container_width=True)
     else:
         st.info("この条件を満たすためにアサインされたスタッフはいません。")
 
@@ -322,7 +364,7 @@ else:
     st.info("希望シフトデータがありません。")
 
 # ==========================================
-# 👥 5. 【復活＆強化】スタッフアカウント管理
+# 👥 5. スタッフアカウント管理
 # ==========================================
 st.markdown("---")
 st.header("👥 スタッフアカウント管理")
@@ -333,7 +375,6 @@ with col_s1:
     new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：山田 太郎", key="s_add_name")
     new_staff_power = st.number_input("このスタッフの戦闘力（点数）を設定してください", min_value=1, value=3, step=1, key="s_add_power")
     
-    # ✨ パワーアップ：既存のポジション、あるいはデフォルトの役割から複数選べるように拡張！
     position_options = all_positions if all_positions else ["レジ", "キッチン", "ホール"]
     new_staff_skills = st.multiselect("このスタッフが担当できるポジション（職種）をすべて選択してください", options=position_options, key="s_add_skills")
     
