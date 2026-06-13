@@ -371,11 +371,22 @@ st.header("👥 スタッフアカウント管理")
 col_s1, col_s2 = st.columns(2)
 
 with col_s1:
+   with col_s1:
     st.subheader("➕ スタッフの新規追加")
     new_staff_name = st.text_input("追加するスタッフの氏名を入力してください", placeholder="例：山田 太郎", key="s_add_name")
     new_staff_power = st.number_input("このスタッフの戦闘力（点数）を設定してください", min_value=1, value=3, step=1, key="s_add_power")
     
+    # 既存のポジション候補
     position_options = all_positions if all_positions else ["レジ", "キッチン", "ホール"]
+    
+    # ✨【新設】新しいポジションをその場でタイピングして追加できる入力欄
+    add_new_pos = st.text_input("💡 選択肢にない新しいポジション名を追加したい場合は入力してください（カンマ区切りで複数可）", placeholder="例：リーダー, 洗い場")
+    if add_new_pos:
+        # 入力された新しいポジション名をリスト化して既存の候補に合流させる
+        new_pos_list = [p.strip() for p in add_new_pos.split(",") if p.strip()]
+        position_options = sorted(list(set(position_options + new_pos_list)))
+    
+    # ここで新規追加したポジションも含めて選択できるようになります
     new_staff_skills = st.multiselect("このスタッフが担当できるポジション（職種）をすべて選択してください", options=position_options, key="s_add_skills")
     
     if st.button("➕ このスタッフをNotionに登録する", use_container_width=True, key="s_add_btn"):
@@ -383,6 +394,8 @@ with col_s1:
             st.error("⚠️ スタッフの名前を入力してください。")
         elif new_staff_name in current_staff_ids:
             st.warning(f"⚠️ 「{new_staff_name}」さんは既に登録されています。")
+        elif not new_staff_skills:
+            st.error("⚠️ 少なくとも1つのポジション（職種）を選択してください。")
         else:
             payload = {
                 "parent": {"database_id": STAFF_DB_ID},
